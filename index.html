@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6f4a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Trasferte">
+<title>Trasferte</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="logo">⛳</span><span id="title">Trasferte</span></div>
+  <div class="right">
+    <span id="netdot" class="dot on" title="online"></span>
+    <button id="whoBtn" class="chip"></button>
+  </div>
+</header>
+
+<main id="view"></main>
+
+<nav id="nav">
+  <button data-v="oggi"><span>🏠</span>Oggi</button>
+  <button data-v="trasferte"><span>🧳</span>Trasferte</button>
+  <button data-v="add" class="fab"><span>＋</span></button>
+  <button data-v="spese"><span>🧾</span>Spese</button>
+  <button data-v="saldo"><span>⚖️</span>Saldo</button>
+  <button data-v="altro"><span>☰</span>Altro</button>
+</nav>
+
+<div id="modal" class="modal hidden"><div class="sheet"><div class="grab"></div><div id="modalBody"></div></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
