@@ -436,7 +436,9 @@ function formSpesa(id, tripName, forceTipo) {
   const cur = currentTrip();
   const s = ex ? Object.assign({}, ex) : { data: today(), trasferta: tripName || (cur ? cur.nome : ""), categoria: forceTipo === "caddie" ? "Golf - Caddie" : "", descrizione: "", importo: "", valuta: (cur && cur.valuta) || "EUR", pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" };
   pendingFile = null;
-  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta)])].filter(Boolean).sort();
+  const TRIP_PRIV = ["casa", "altro"];
+  const mySpesa = n => (D.spese || []).some(x => x.trasferta === n && !(x.tipo === "personale" && x.conto && x.conto !== cfg.who));
+  const trips = [...new Set([...(D.trasferte || []).filter(t => !TRIP_PRIV.includes(String(t.tipo || "").toLowerCase()) || mySpesa(t.nome)).map(t => t.nome), s.trasferta])].filter(Boolean).sort();
   const cats = D.settings.categorie || []; const vals = D.settings.valute || ["EUR"];
   const isMov = s.tipo === "caddie" || s.tipo === "regolamento";
   openModal(`
