@@ -25,6 +25,7 @@ const fmtD = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).
 const fmtDY = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
 const monthName = s => new Date(s + "T00:00:00").toLocaleDateString("it-IT", { month: "long", year: "numeric" });
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const kfmt = n => { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "k" : Math.round(n).toString(); };
 const pct = f => ((Number(f) || 0) * 100).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 const other = p => p === "Giulio" ? "Alessandra" : "Giulio";
 const baseName = n => String(n || "").replace(/\b20\d\d\b/g, "").replace(/\s+/g, " ").trim();
@@ -115,9 +116,9 @@ function render() {
   $("#whoBtn").textContent = cfg.who;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
   setNet();
-  const map = { compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
+  const map = { prenotazioni: vPrenotazioni, compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
   $("#view").innerHTML = (map[view] || vOggi)();
-  window.scrollTo(0, 0);
+  const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
 function go(v, arg) { view = v; viewArg = arg; render(); }
 document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "add") return formSpesa(); go(b.dataset.v); }));
@@ -159,6 +160,8 @@ function vOggi() {
   } else {
     h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt[0] ? `<div>Prossima: <b>${esc(nxt[0].nome)}</b> dal ${fmtDY(nxt[0].inizio)}</div>` : `<div>Aggiungi la prossima trasferta 👇</div>`}</div>`;
   }
+  const nPren = (D.prenotazioni || []).filter(p => p.stato === "nuova").length;
+  if (nPren) h += `<div class="card tap" onclick="go('prenotazioni')"><div class="row between"><div><b>📧 ${nPren} prenotazioni trovate nella mail</b><div class="muted">Tocca per collegarle alla checklist</div></div><span>›</span></div></div>`;
   h += `<div class="card tap" onclick="go('saldo')"><div class="row between"><div><div class="muted">Conto tra voi</div><div style="font-weight:700;font-size:18px">${saldoLabel(s)}</div></div><span>›</span></div></div>`;
   if (nxt.length) {
     h += `<h2>Prossime trasferte</h2>`;
@@ -200,7 +203,7 @@ function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
   const cs = tripChecks(t.id), tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
   const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
-  const byCat = {}; ss.forEach(s => byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.libri_ale || 0));
+  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.importo_eur || 0); });
   let h = `<div class="row"><button class="btn sm" onclick="go('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="muted" style="margin:6px 0 12px">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${t.paese ? ", " + esc(t.paese) : ""} · ${t.valuta || "EUR"}${t.fuso ? " · " + esc(t.fuso) : ""}</div>
     ${t.note ? `<div class="card small">${esc(t.note).replace(/\n/g, "<br>")}</div>` : ""}
@@ -216,6 +219,7 @@ function vTrip() {
     ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
     <div class="card list">${ss.length ? ss.map(itemSpesa).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
     <button class="btn block" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa per questa trasferta</button>
+    ${bookingsSection(t)}
     <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
     <div class="card" onclick="formNota('${esc(baseName(t.nome))}')">${nota && nota.testo ? esc(nota.testo).replace(/\n/g, "<br>") : `<span class="muted">Hotel che vi è piaciuto, distanza dal campo, dove fare la spesa… tocca per scrivere</span>`}</div>
     <div class="row" style="margin-top:14px;gap:8px"><button class="btn grow" onclick="duplicaTrip('${t.id}')">Duplica per l'anno prossimo</button><button class="btn danger" onclick="delTrip('${t.id}')">Elimina</button></div>`;
@@ -224,7 +228,7 @@ function vTrip() {
 
 function bars(obj, total) {
   const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]); const max = Math.max(...keys.map(k => obj[k]), 1);
-  const tot = total || keys.reduce((a, k) => a + obj[k], 0);
+  const tot = total || keys.reduce((a, k) => a + obj[k], 0) || 1;
   return keys.map(k => `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt">${eur(obj[k])} <span class="muted">${pct(obj[k] / tot)}</span></span></div><div class="bar"><i style="width:${Math.max(2, obj[k] / max * 100)}%"></i></div></div>`).join("");
 }
 
@@ -273,6 +277,7 @@ function vSaldo() {
 function vAltro() {
   return `<h1>Altro</h1>
     <div class="card tap" onclick="go('compensi')"><b>💶 Compensi caddie</b><div class="muted">Settimane, montepremi, 50% voli, cosa resta da pagare</div></div>
+    <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${(D.prenotazioni || []).filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
     <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
     <div class="card tap" onclick="go('documenti')"><b>🪪 Documenti</b><div class="muted">Passaporti, licenze, visti, assicurazioni</div></div>
     <div class="card tap" onclick="go('impostazioni')"><b>⚙️ Impostazioni</b><div class="muted">Categorie, checklist, report per il commercialista</div></div>
@@ -290,7 +295,7 @@ function vDashboard() {
   const months = Object.keys(byMonth).sort(); const mmax = Math.max(...months.map(m => byMonth[m]), 1);
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Dashboard</h1><select onchange="go('dashboard',this.value)">${years.map(yy => `<option ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select></div>
     <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(ale - caddie)}</div><div class="l">Spese Alessandra</div></div><div class="kpi"><div class="v">${eur(giu)}</div><div class="l">Spese Giulio</div></div><div class="kpi"><div class="v">${eur(caddie)}</div><div class="l">Compensi caddie</div></div><div class="kpi"><div class="v">${ss.length}</div><div class="l">Movimenti</div></div></div>
-    <h2>Per mese <span class="muted">(totale pagato, tutte le spese)</span></h2><div class="card"><div style="display:flex;align-items:flex-end;gap:4px;height:120px">${months.map(m => `<div title="${m}: ${eur(byMonth[m])}" style="flex:1;background:var(--brand);border-radius:4px 4px 0 0;height:${Math.max(2, byMonth[m] / mmax * 100)}%"></div>`).join("")}</div><div style="display:flex;gap:4px;font-size:10px;color:var(--muted)">${months.map(m => `<div style="flex:1;text-align:center">${new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" })}</div>`).join("")}</div></div>
+    <h2>Per mese <span class="muted">(totale pagato, tutte le spese)</span></h2><div class="card"><div style="display:flex;align-items:flex-end;gap:4px;height:120px">${months.map(m => `<div title="${m}: ${eur(byMonth[m])}" style="flex:1;background:var(--brand);border-radius:4px 4px 0 0;height:${Math.max(2, byMonth[m] / mmax * 100)}%"></div>`).join("")}</div><div style="display:flex;gap:4px;font-size:10px;color:var(--muted)">${months.map(m => `<div style="flex:1;text-align:center;line-height:1.2">${new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" })}<br><b style="color:var(--ink2)">${kfmt(byMonth[m])}</b></div>`).join("")}</div></div>
     <h2>Per trasferta</h2><div class="card">${bars(byTrip)}</div>
     <h2>Per categoria</h2><div class="card">${bars(byCat)}</div>`;
 }
@@ -323,6 +328,54 @@ async function makeReport() {
   toast("Genero il report…", 6000);
   try { const r = await api("report", { anno: $("#repAnno").value, persona: $("#repChi").value }); openModal(`<h2>Report pronto</h2><p>${r.righe} righe · totale ${eur(r.totale)}</p><a class="btn primary block" href="${esc(r.url)}" target="_blank" rel="noopener">Apri il foglio</a>`); }
   catch (e) { toast("Errore: " + e.message, 4000); }
+}
+
+// ---------------------------------------------------------------- PRENOTAZIONI DA EMAIL
+const TIPO_PREN = { volo: "✈️ Volo", alloggio: "🏨 Alloggio", auto: "🚗 Auto", treno: "🚆 Treno", altro: "📧 Altro" };
+function bookingsSection(t) {
+  const list = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id && p.stato === "nuova");
+  if (!list.length) return "";
+  return `<h2>Trovate nella mail <span class="muted">(${list.length})</span></h2><div class="card list">${list.map(p => itemPren(p)).join("")}</div>`;
+}
+function itemPren(p) {
+  return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
+}
+function vPrenotazioni() {
+  const all = (D.prenotazioni || []).slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
+  const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "collegata");
+  const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
+  return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Prenotazioni email</h1><button class="btn sm primary" onclick="scanEmail()">Scansiona</button></div>
+    <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
+    <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
+    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div></div>`).join("")}</div>` : ""}`;
+}
+async function scanEmail() {
+  toast("Leggo la mail… (può volerci un minuto)", 8000);
+  try { const r = await api("email.scan"); D.prenotazioni = r.prenotazioni; LS.set("data", D); render(); toast(r.nuove ? `${r.nuove} nuove prenotazioni trovate` : "Nessuna prenotazione nuova"); }
+  catch (e) { toast("Errore: " + e.message, 5000); }
+}
+async function ignoraPren(id) {
+  try { await api("pren.stato", { id, stato: "ignorata" }); D.prenotazioni = D.prenotazioni.filter(p => p.id !== id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+function formPren(id) {
+  const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
+  const trips = (D.trasferte || []).slice().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  const sugg = { volo: ["Volo andata", "Volo ritorno"], alloggio: ["Alloggio"], auto: ["Auto"], treno: ["Treno"], altro: [] }[p.tipo] || [];
+  const tid0 = p.trasferta_id || (trips[0] || {}).id;
+  const voci = tid => tripChecks(tid);
+  const voceOptions = tid => { const cs = voci(tid); const pref = cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase())) && c.stato === "da_fare") || cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase()))); return cs.map(c => `<option value="${c.id}" ${pref && pref.id === c.id ? "selected" : ""}>${esc(c.voce)} (${STATI[c.stato]?.lab || c.stato})</option>`).join("") + `<option value="">＋ Nuova voce: ${esc(sugg[0] || p.oggetto.slice(0, 30))}</option>`; };
+  openModal(`<h2 style="margin-top:0">Collega prenotazione</h2>
+    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)}</div><div>${TIPO_PREN[p.tipo] || ""} ${p.inizio ? fmtDY(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtDY(p.fine) : "") : ""}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · codice <b>" + esc(p.codice) + "</b>" : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div>${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">apri la prenotazione</a>` : ""}</div>
+    <div class="field"><label>Trasferta</label><select id="pTrip">${trips.map(t => `<option value="${t.id}" ${t.id === tid0 ? "selected" : ""}>${esc(t.nome)} (${fmtD(t.inizio)}–${fmtD(t.fine)})</option>`).join("")}</select></div>
+    <div class="field"><label>Voce della checklist</label><select id="pVoce">${voceOptions(tid0)}</select></div>
+    <div class="row" style="gap:8px"><button class="btn primary grow" id="pSave">Collega</button><button class="btn" onclick="closeModal()">Annulla</button></div>`);
+  $("#pTrip").addEventListener("change", () => { $("#pVoce").innerHTML = voceOptions($("#pTrip").value); });
+  $("#pSave").addEventListener("click", async () => {
+    const trasferta_id = $("#pTrip").value, voce_id = $("#pVoce").value;
+    closeModal(); toast("Collego…");
+    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast("Collegata alla checklist"); }
+    catch (e) { toast("Errore: " + e.message, 5000); }
+  });
 }
 
 // ---------------------------------------------------------------- COMPENSI
@@ -463,8 +516,8 @@ function formTrip(id, preset) {
     t.anno = t.inizio.slice(0, 4); const isNew = !t.id; if (isNew) t.id = uid();
     closeModal();
     const res = await write("trasferta.save", t, d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); (d.settings.checklist_template || []).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
-    if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); }
-    go("trip", t.id);
+    if (isNew) go("trip", t.id);
+    if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); render(); }
   });
 }
 async function delTrip(id) { if (!confirm("Eliminare la trasferta e la sua checklist? Le spese restano.")) return; await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); }); go("trasferte"); }
