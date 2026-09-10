@@ -9,7 +9,7 @@ const LS = {
 const cfg = LS.get("cfg", { api: "", token: "", who: "" });
 let D = LS.get("data", null);                 // dati (boot)
 let queue = LS.get("queue", []);              // azioni in attesa (offline)
-let view = "oggi", viewArg = null, syncing = false;
+let view = "oggi", viewArg = null, syncing = false, lastError = "";
 const PERSONE = ["Giulio", "Alessandra"];
 const STATI = { da_fare: { ico: "", lab: "Da fare" }, prenotato: { ico: "📅", lab: "Prenotato" }, pagato: { ico: "✓", lab: "Pagato" }, na: { ico: "–", lab: "Non serve" } };
 const TIPI = { condivisa: "Condivisa", ciascuno: "Ognuno la sua parte", personale: "Personale", caddie: "Compenso caddie", regolamento: "Pagamento" };
@@ -72,8 +72,8 @@ async function reload(silent) {
   if (!cfg.api || !cfg.token) return;
   try {
     const d = await api("boot");
-    D = d; LS.set("data", D); if (!silent) toast("Dati aggiornati"); render();
-  } catch (e) { if (!silent) toast("Impossibile aggiornare: " + e.message, 4000); }
+    D = d; lastError = ""; LS.set("data", D); if (!silent) toast("Dati aggiornati"); render();
+  } catch (e) { lastError = e.message || String(e); if (!silent) toast("Impossibile aggiornare: " + lastError, 4000); if (!D) render(); }
 }
 window.addEventListener("online", () => { setNet(); flushQueue(); });
 window.addEventListener("offline", setNet);
@@ -104,7 +104,12 @@ function checkSummary(id) { const cs = tripChecks(id).filter(c => c.stato !== "n
 // ---------------------------------------------------------------- render
 function render() {
   if (!cfg.api || !cfg.token || !cfg.who) return renderSetup();
-  if (!D) { $("#view").innerHTML = `<div class="empty">Carico i dati…</div>`; return; }
+  if (!D) {
+    $("#view").innerHTML = lastError
+      ? `<div class="empty">Non riesco a collegarmi.<br><span class="small">${esc(lastError)}</span></div><button class="btn primary block" onclick="lastError='';render();reload()">Riprova</button><button class="btn block" onclick="cfg.api='';cfg.token='';LS.set('cfg',cfg);render()">Modifica collegamento</button>`
+      : `<div class="empty">Carico i dati…</div><button class="btn block" onclick="cfg.api='';cfg.token='';LS.set('cfg',cfg);render()">Modifica collegamento</button>`;
+    return;
+  }
   $("#whoBtn").textContent = cfg.who;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
   setNet();
@@ -123,15 +128,19 @@ function renderSetup() {
     <div class="card">
       <p class="small">Per collegare l'app al vostro foglio servono l'indirizzo dell'API (URL dell'app web di Apps Script) e il token che trovi in <b>Impostazioni</b> del foglio "Team DB".</p>
       <div class="field"><label>Chi sei?</label><div class="seg" id="segWho">${PERSONE.map(p => `<button data-p="${p}" class="${cfg.who === p ? "on" : ""}">${p}</button>`).join("")}</div></div>
-      <div class="field"><label>URL API (…/exec)</label><input id="inApi" value="${esc(cfg.api)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      <div class="field"><label>URL API (…/exec) — oppure incolla qui il link completo ricevuto</label><input id="inApi" value="${esc(cfg.api)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
       <div class="field"><label>Token</label><input id="inTok" value="${esc(cfg.token)}"></div>
       <button class="btn primary block" id="saveCfg">Collega</button>
     </div>`;
   $("#segWho").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; cfg.who = b.dataset.p; $("#segWho").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); });
   $("#saveCfg").addEventListener("click", async () => {
-    cfg.api = $("#inApi").value.trim(); cfg.token = $("#inTok").value.trim();
+    let apiIn = $("#inApi").value.trim(), tokIn = $("#inTok").value.trim();
+    const m = apiIn.match(/api=([^&\s]+)/); if (m) { apiIn = decodeURIComponent(m[1]); const k = $("#inApi").value.match(/[#&]k=([^&\s]+)/); if (k) tokIn = k[1]; }
+    cfg.api = apiIn; cfg.token = tokIn;
     if (!cfg.who) return toast("Scegli chi sei");
-    LS.set("cfg", cfg); toast("Collego…"); await reload(true); if (!D) toast("Collegamento fallito: controlla URL e token", 4000); render();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(cfg.api)) return toast("L'URL API deve essere quello di Apps Script che finisce con /exec", 4000);
+    if (!cfg.token) return toast("Manca il token");
+    LS.set("cfg", cfg); toast("Collego…"); await reload(false); render();
   });
 }
 
@@ -470,7 +479,8 @@ function formDoc(id) {
 // ---------------------------------------------------------------- avvio
 (function init() {
   // configurazione via link: index.html#api=...&k=...
-  if (location.hash.includes("api=")) { const h = new URLSearchParams(location.hash.slice(1)); if (h.get("api")) cfg.api = h.get("api"); if (h.get("k")) cfg.token = h.get("k"); LS.set("cfg", cfg); history.replaceState(null, "", location.pathname); }
+  const src = location.hash.includes("api=") ? location.hash.slice(1) : (location.search.includes("api=") ? location.search.slice(1) : "");
+  if (src) { const h = new URLSearchParams(src); if (h.get("api")) cfg.api = h.get("api"); if (h.get("k")) cfg.token = h.get("k"); LS.set("cfg", cfg); history.replaceState(null, "", location.pathname); }
   render();
   if (cfg.api && cfg.token) { flushQueue().then(() => reload(true)); }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
