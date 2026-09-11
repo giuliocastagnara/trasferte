@@ -92,6 +92,9 @@ function computeSpesa(s) {
   s.n_persone = N; s.libri_ale = ale; s.libri_giulio = giu; s.saldo = Math.round(saldo * 100) / 100; return s;
 }
 const visibleSpese = () => (D.spese || []).filter(s => !(s.tipo === "personale" && s.conto && s.conto !== cfg.who));
+// Quanto della spesa e' a carico di chi sta guardando: Giulio vede la SUA quota (le condivise
+// vanno sui libri di Alessandra per intero, a lui resta la parte sua), Alessandra vede il totale.
+const mioImporto = s => Math.round((cfg.who === "Giulio" ? (+s.libri_giulio || 0) : (+s.importo_eur || 0)) * 100) / 100;
 const saldoTot = () => Math.round((D.spese || []).reduce((a, s) => a + (Number(s.saldo) || 0), 0) * 100) / 100;
 function saldoLabel(v) { if (Math.abs(v) < 0.005) return "Siete pari"; return v > 0 ? `Alessandra deve a Giulio ${eur(v)}` : `Giulio deve ad Alessandra ${eur(-v)}`; }
 function currentTrip(d = today()) {
@@ -101,7 +104,8 @@ function currentTrip(d = today()) {
 function nextTrips(d = today()) { return (D.trasferte || []).filter(t => t.inizio > d && !t.archiviata).sort((a, b) => a.inizio < b.inizio ? -1 : 1); }
 function tripChecks(id) { return (D.checklist || []).filter(c => c.trasferta_id === id).sort((a, b) => (a.ordine || 0) - (b.ordine || 0)); }
 function tripSpese(nome) { return visibleSpese().filter(s => s.trasferta === nome); }
-function tripTotals(nome) { const ss = tripSpese(nome); return { ale: ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu: ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0), n: ss.length }; }
+function tripTotals(nome) { const ss = tripSpese(nome); const ale = ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu = ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0);
+  return { ale, giu, mio: cfg.who === "Giulio" ? giu : ale, n: ss.length }; }
 function checkSummary(id) { const cs = tripChecks(id).filter(c => c.stato !== "na"); const done = cs.filter(c => c.stato === "prenotato" || c.stato === "pagato").length; return { done, tot: cs.length, open: cs.filter(c => c.stato === "da_fare") }; }
 
 // ---------------------------------------------------------------- render
@@ -154,7 +158,7 @@ function vOggi() {
       <div class="muted">Trasferta in corso</div>
       <div class="big">${esc(t.nome)}</div>
       <div class="row between" style="margin-top:6px"><span>${fmtD(t.inizio)} → ${fmtD(t.fine)} ${t.citta ? "· " + esc(t.citta) : ""}</span><span class="pill">${t.valuta || "EUR"}</span></div>
-      <div class="row between" style="margin-top:10px"><span>Checklist ${cs.done}/${cs.tot}</span><span>Spese: ${eur(tot.ale)}</span></div>
+      <div class="row between" style="margin-top:10px"><span>Checklist ${cs.done}/${cs.tot}</span><span>Spese: ${eur(tot.mio)}</span></div>
       ${cs.open.length ? `<div class="muted" style="margin-top:6px">Da fare: ${cs.open.map(c => esc(c.voce)).join(", ")}</div>` : ""}
     </div>`;
   } else {
@@ -170,18 +174,19 @@ function vOggi() {
         <span class="pill ${cs.open.length ? (days < 14 ? "bad" : "warn") : ""}">${cs.open.length ? cs.open.length + " da fare" : "✓ pronta"}</span></div></div>`; });
   }
   const recent = visibleSpese().slice().sort((a, b) => (b.creato || "") < (a.creato || "") ? -1 : 1).slice(0, 5);
-  if (recent.length) { h += `<h2>Ultime spese</h2><div class="card list">` + recent.map(itemSpesa).join("") + `</div>`; }
+  if (recent.length) { h += `<h2>Ultime spese</h2><div class="card list">` + recent.map(s => itemSpesa(s)).join("") + `</div>`; }
   h += `<button class="btn primary block" onclick="formSpesa()">＋ Aggiungi spesa</button>`;
   return h;
 }
 
-function itemSpesa(s) {
+function itemSpesa(s, mio) {
+  const pieno = Math.round((+s.importo_eur || 0) * 100) / 100, val = mio ? mioImporto(s) : pieno, parz = mio && Math.abs(val - pieno) > 0.005;
   const tag = s.tipo === "condivisa" ? `<span class="pill">condivisa${+s.n_persone > 2 ? " /" + s.n_persone : ""}</span>` : s.tipo === "ciascuno" ? `<span class="pill blue">ognuno la sua</span>` : s.tipo === "personale" ? `<span class="pill grey">${esc(s.conto)}</span>` : s.tipo === "caddie" ? `<span class="pill warn">compenso caddie</span>` : `<span class="pill warn">pagamento</span>`;
-  const orig = s.valuta && s.valuta !== "EUR" ? `<span class="muted">${num(s.importo)} ${esc(s.valuta)}</span> ` : "";
+  const orig = !parz && s.valuta && s.valuta !== "EUR" ? `<span class="muted">${num(s.importo)} ${esc(s.valuta)}</span> ` : "";
   return `<div class="item tap" onclick="formSpesa('${s.id}')">
     <div class="thumb">${s.scontrino ? "🧾" : "·"}</div>
     <div class="grow"><div class="ellipsis"><b>${esc(s.descrizione || s.categoria)}</b></div><div class="muted ellipsis">${fmtD(s.data)} · ${esc(s.trasferta)} · ${esc(s.categoria)} · ${esc(s.pagato_da)}</div><div>${tag}</div></div>
-    <div style="text-align:right">${orig}<div class="amt">${eur(s.importo_eur)}</div></div></div>`;
+    <div style="text-align:right">${orig}<div class="amt">${eur(val)}</div>${parz ? `<div class="muted">su ${eur(pieno)}</div>` : ""}</div></div>`;
 }
 
 // ---- TRASFERTE
@@ -233,14 +238,14 @@ function vTrasferte() {
   if (!list.length) h += `<div class="empty">Nessuna trasferta per il ${y}</div>`;
   list.forEach(t => {
     if (t.virtuale) {
-      const tot = tripTotals(t.nome), sp = tripSpese(t.nome).reduce((a, s) => a + (+s.importo_eur || 0), 0);
+      const tot = tripTotals(t.nome);
       h += `<div class="card tap t-altro" onclick="creaScheda(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
-        <div style="text-align:right"><div class="amt">${eur(sp)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
+        <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
       return;
     }
     const cs = checkSummary(t.id), tot = tripTotals(t.nome), past = t.fine < today(), cur = currentTrip() && currentTrip().id === t.id;
     h += `<div class="card tap${cardCls(t.tipo)}" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${cur ? '<span class="pill">in corso</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</div></div>
-      <div style="text-align:right"><div class="amt">${eur(tot.ale)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`;
+      <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`;
   });
   return h;
 }
@@ -249,7 +254,7 @@ function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
   const cs = tripChecks(t.id), tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
   const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
-  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.importo_eur || 0); });
+  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") byCat[s.categoria] = (byCat[s.categoria] || 0) + mioImporto(s); });
   let h = `<div class="row"><button class="btn sm" onclick="go('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="muted" style="margin:6px 0 12px">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${t.paese ? ", " + esc(t.paese) : ""} · ${t.valuta || "EUR"}${t.fuso ? " · " + esc(t.fuso) : ""}</div>
     ${t.note ? `<div class="card small">${esc(t.note).replace(/\n/g, "<br>")}</div>` : ""}
@@ -263,7 +268,7 @@ function vTrip() {
     <h2>Spese</h2>
     <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
     ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
-    <div class="card list">${ss.length ? ss.map(itemSpesa).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
+    <div class="card list">${ss.length ? ss.map(s => itemSpesa(s, true)).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
     <button class="btn block" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa per questa trasferta</button>
     ${bookingsSection(t)}
     <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
