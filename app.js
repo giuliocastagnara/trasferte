@@ -9,7 +9,7 @@ const LS = {
 const cfg = LS.get("cfg", { api: "", token: "", who: "" });
 let D = LS.get("data", null);                 // dati (boot)
 let queue = LS.get("queue", []);              // azioni in attesa (offline)
-let view = "oggi", viewArg = null, syncing = false;
+let view = "oggi", viewArg = null, syncing = false, lastError = "";
 const PERSONE = ["Giulio", "Alessandra"];
 const STATI = { da_fare: { ico: "", lab: "Da fare" }, prenotato: { ico: "📅", lab: "Prenotato" }, pagato: { ico: "✓", lab: "Pagato" }, na: { ico: "–", lab: "Non serve" } };
 const TIPI = { condivisa: "Condivisa", ciascuno: "Ognuno la sua parte", personale: "Personale", caddie: "Compenso caddie", regolamento: "Pagamento" };
@@ -25,6 +25,8 @@ const fmtD = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).
 const fmtDY = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
 const monthName = s => new Date(s + "T00:00:00").toLocaleDateString("it-IT", { month: "long", year: "numeric" });
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const kfmt = n => { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "k" : Math.round(n).toString(); };
+const pct = f => ((Number(f) || 0) * 100).toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 const other = p => p === "Giulio" ? "Alessandra" : "Giulio";
 const baseName = n => String(n || "").replace(/\b20\d\d\b/g, "").replace(/\s+/g, " ").trim();
 function toast(m, ms = 2200) { const t = $("#toast"); t.textContent = m; t.classList.remove("hidden"); clearTimeout(t._t); t._t = setTimeout(() => t.classList.add("hidden"), ms); }
@@ -72,8 +74,8 @@ async function reload(silent) {
   if (!cfg.api || !cfg.token) return;
   try {
     const d = await api("boot");
-    D = d; LS.set("data", D); if (!silent) toast("Dati aggiornati"); render();
-  } catch (e) { if (!silent) toast("Impossibile aggiornare: " + e.message, 4000); }
+    D = d; lastError = ""; if (d.who) { cfg.who = d.who; LS.set("cfg", cfg); } LS.set("data", D); if (!silent) toast("Dati aggiornati"); render();
+  } catch (e) { lastError = e.message || String(e); if (!silent) toast("Impossibile aggiornare: " + lastError, 4000); if (!D) render(); }
 }
 window.addEventListener("online", () => { setNet(); flushQueue(); });
 window.addEventListener("offline", setNet);
@@ -89,6 +91,7 @@ function computeSpesa(s) {
   else if (s.tipo === "regolamento") { saldo = s.pagato_da === "Giulio" ? T : -T; }
   s.n_persone = N; s.libri_ale = ale; s.libri_giulio = giu; s.saldo = Math.round(saldo * 100) / 100; return s;
 }
+const visibleSpese = () => (D.spese || []).filter(s => !(s.tipo === "personale" && s.conto && s.conto !== cfg.who));
 const saldoTot = () => Math.round((D.spese || []).reduce((a, s) => a + (Number(s.saldo) || 0), 0) * 100) / 100;
 function saldoLabel(v) { if (Math.abs(v) < 0.005) return "Siete pari"; return v > 0 ? `Alessandra deve a Giulio ${eur(v)}` : `Giulio deve ad Alessandra ${eur(-v)}`; }
 function currentTrip(d = today()) {
@@ -97,41 +100,47 @@ function currentTrip(d = today()) {
 }
 function nextTrips(d = today()) { return (D.trasferte || []).filter(t => t.inizio > d && !t.archiviata).sort((a, b) => a.inizio < b.inizio ? -1 : 1); }
 function tripChecks(id) { return (D.checklist || []).filter(c => c.trasferta_id === id).sort((a, b) => (a.ordine || 0) - (b.ordine || 0)); }
-function tripSpese(nome) { return (D.spese || []).filter(s => s.trasferta === nome); }
+function tripSpese(nome) { return visibleSpese().filter(s => s.trasferta === nome); }
 function tripTotals(nome) { const ss = tripSpese(nome); return { ale: ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu: ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0), n: ss.length }; }
 function checkSummary(id) { const cs = tripChecks(id).filter(c => c.stato !== "na"); const done = cs.filter(c => c.stato === "prenotato" || c.stato === "pagato").length; return { done, tot: cs.length, open: cs.filter(c => c.stato === "da_fare") }; }
 
 // ---------------------------------------------------------------- render
 function render() {
-  if (!cfg.api || !cfg.token || !cfg.who) return renderSetup();
-  if (!D) { $("#view").innerHTML = `<div class="empty">Carico i dati…</div>`; return; }
+  if (!cfg.api || !cfg.token) return renderSetup();
+  if (!D) {
+    $("#view").innerHTML = lastError
+      ? `<div class="empty">Non riesco a collegarmi.<br><span class="small">${esc(lastError)}</span></div><button class="btn primary block" onclick="lastError='';render();reload()">Riprova</button><button class="btn block" onclick="cfg.api='';cfg.token='';LS.set('cfg',cfg);render()">Modifica collegamento</button>`
+      : `<div class="empty">Carico i dati…</div><button class="btn block" onclick="cfg.api='';cfg.token='';LS.set('cfg',cfg);render()">Modifica collegamento</button>`;
+    return;
+  }
   $("#whoBtn").textContent = cfg.who;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
   setNet();
-  const map = { oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
+  const map = { prenotazioni: vPrenotazioni, compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
   $("#view").innerHTML = (map[view] || vOggi)();
-  window.scrollTo(0, 0);
+  const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
 function go(v, arg) { view = v; viewArg = arg; render(); }
 document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "add") return formSpesa(); go(b.dataset.v); }));
-$("#whoBtn").addEventListener("click", () => { cfg.who = other(cfg.who); LS.set("cfg", cfg); toast("Ora sei " + cfg.who); render(); });
+$("#whoBtn").addEventListener("click", () => toast("Sei collegato come " + cfg.who + " (dipende dal token)"));
 
 // ---- setup iniziale
 function renderSetup() {
   $("#view").innerHTML = `
     <h1>Benvenuto 👋</h1>
     <div class="card">
-      <p class="small">Per collegare l'app al vostro foglio servono l'indirizzo dell'API (URL dell'app web di Apps Script) e il token che trovi in <b>Impostazioni</b> del foglio "Team DB".</p>
-      <div class="field"><label>Chi sei?</label><div class="seg" id="segWho">${PERSONE.map(p => `<button data-p="${p}" class="${cfg.who === p ? "on" : ""}">${p}</button>`).join("")}</div></div>
-      <div class="field"><label>URL API (…/exec)</label><input id="inApi" value="${esc(cfg.api)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      <p class="small">Incolla il link personale che hai ricevuto (contiene indirizzo e token: il token dice all'app chi sei).</p>
+      <div class="field"><label>URL API (…/exec) — oppure incolla qui il link completo ricevuto</label><input id="inApi" value="${esc(cfg.api)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
       <div class="field"><label>Token</label><input id="inTok" value="${esc(cfg.token)}"></div>
       <button class="btn primary block" id="saveCfg">Collega</button>
     </div>`;
-  $("#segWho").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; cfg.who = b.dataset.p; $("#segWho").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); });
   $("#saveCfg").addEventListener("click", async () => {
-    cfg.api = $("#inApi").value.trim(); cfg.token = $("#inTok").value.trim();
-    if (!cfg.who) return toast("Scegli chi sei");
-    LS.set("cfg", cfg); toast("Collego…"); await reload(true); if (!D) toast("Collegamento fallito: controlla URL e token", 4000); render();
+    let apiIn = $("#inApi").value.trim(), tokIn = $("#inTok").value.trim();
+    const m = apiIn.match(/api=([^&\s]+)/); if (m) { apiIn = decodeURIComponent(m[1]); const k = $("#inApi").value.match(/[#&]k=([^&\s]+)/); if (k) tokIn = k[1]; }
+    cfg.api = apiIn; cfg.token = tokIn;
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(cfg.api)) return toast("L'URL API deve essere quello di Apps Script che finisce con /exec", 4000);
+    if (!cfg.token) return toast("Manca il token");
+    LS.set("cfg", cfg); toast("Collego…"); await reload(false); render();
   });
 }
 
@@ -151,6 +160,8 @@ function vOggi() {
   } else {
     h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt[0] ? `<div>Prossima: <b>${esc(nxt[0].nome)}</b> dal ${fmtDY(nxt[0].inizio)}</div>` : `<div>Aggiungi la prossima trasferta 👇</div>`}</div>`;
   }
+  const nPren = (D.prenotazioni || []).filter(p => p.stato === "nuova").length;
+  if (nPren) h += `<div class="card tap" onclick="go('prenotazioni')"><div class="row between"><div><b>📧 ${nPren} prenotazioni trovate nella mail</b><div class="muted">Tocca per collegarle alla checklist</div></div><span>›</span></div></div>`;
   h += `<div class="card tap" onclick="go('saldo')"><div class="row between"><div><div class="muted">Conto tra voi</div><div style="font-weight:700;font-size:18px">${saldoLabel(s)}</div></div><span>›</span></div></div>`;
   if (nxt.length) {
     h += `<h2>Prossime trasferte</h2>`;
@@ -158,7 +169,7 @@ function vOggi() {
       h += `<div class="card tap" onclick="go('trip','${x.id}')"><div class="row between"><div class="grow"><b>${esc(x.nome)}</b><div class="muted">${fmtDY(x.inizio)} → ${fmtDY(x.fine)} · tra ${days} gg</div></div>
         <span class="pill ${cs.open.length ? (days < 14 ? "bad" : "warn") : ""}">${cs.open.length ? cs.open.length + " da fare" : "✓ pronta"}</span></div></div>`; });
   }
-  const recent = (D.spese || []).slice().sort((a, b) => (b.creato || "") < (a.creato || "") ? -1 : 1).slice(0, 5);
+  const recent = visibleSpese().slice().sort((a, b) => (b.creato || "") < (a.creato || "") ? -1 : 1).slice(0, 5);
   if (recent.length) { h += `<h2>Ultime spese</h2><div class="card list">` + recent.map(itemSpesa).join("") + `</div>`; }
   h += `<button class="btn primary block" onclick="formSpesa()">＋ Aggiungi spesa</button>`;
   return h;
@@ -174,17 +185,56 @@ function itemSpesa(s) {
 }
 
 // ---- TRASFERTE
+// Indice spese per trasferta: quante in tutto e quante ne vedo io (le personali dell'altro non le vedo).
+function spesePerTrasferta() {
+  const m = {};
+  (D.spese || []).forEach(s => {
+    const n = s.trasferta; if (!n) return;
+    const x = m[n] || (m[n] = { tot: 0, mie: 0, date: [] });
+    x.tot++;
+    if (!(s.tipo === "personale" && s.conto && s.conto !== cfg.who)) { x.mie++; if (s.data) x.date.push(String(s.data).slice(0, 10)); }
+  });
+  return m;
+}
+// L'elenco che vedo io: ogni trasferta in cui ho almeno una spesa visibile, comprese quelle
+// che esistono solo nelle spese (senza riga nel tab Trasferte). Le trasferte ancora senza
+// nessuna spesa restano visibili a entrambi (nuove/future).
+function trasferteVisibili() {
+  const m = spesePerTrasferta();
+  const conScheda = new Set((D.trasferte || []).map(t => t.nome));
+  const reali = (D.trasferte || []).filter(t => { const x = m[t.nome]; return !x || x.mie > 0; });
+  const virtuali = Object.keys(m).filter(n => !conScheda.has(n) && m[n].mie > 0).map(n => {
+    const d = m[n].date.slice().sort();
+    return { id: "", nome: n, inizio: d[0] || "", fine: d[d.length - 1] || "", anno: (d[0] || "").slice(0, 4), virtuale: true };
+  });
+  return reali.concat(virtuali);
+}
+let trVirt = [];
+function apriSpeseTrip(i) {
+  const t = trVirt[i]; if (!t) return;
+  fSp = { q: "", trip: t.nome, tipo: "", cat: "", anno: String(t.anno || (t.inizio || "").slice(0, 4) || "") };
+  go("spese");
+}
 function vTrasferte() {
-  const all = (D.trasferte || []).slice().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  const all = trasferteVisibili().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  trVirt = all.filter(t => t.virtuale);
   const years = [...new Set(all.map(t => String(t.anno || (t.inizio || "").slice(0, 4))))].sort().reverse();
   const y = viewArg || years[0] || String(new Date().getFullYear());
   let h = `<div class="row between"><h1>Trasferte</h1><button class="btn sm primary" onclick="formTrip()">＋ Nuova</button></div>
     <div class="filters">${years.map(yy => `<button class="btn sm ${yy === y ? "primary" : ""}" onclick="go('trasferte','${yy}')">${yy}</button>`).join("")}</div>`;
   const list = all.filter(t => String(t.anno || (t.inizio || "").slice(0, 4)) === y);
   if (!list.length) h += `<div class="empty">Nessuna trasferta per il ${y}</div>`;
-  list.forEach(t => { const cs = checkSummary(t.id), tot = tripTotals(t.nome), past = t.fine < today(), cur = currentTrip() && currentTrip().id === t.id;
+  list.forEach(t => {
+    if (t.virtuale) {
+      const tot = tripTotals(t.nome), sp = tripSpese(t.nome).reduce((a, s) => a + (+s.importo_eur || 0), 0);
+      h += `<div class="card tap" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> <span class="pill grey">solo spese</span><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
+        <div style="text-align:right"><div class="amt">${eur(sp)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
+      return;
+    }
+    const cs = checkSummary(t.id), tot = tripTotals(t.nome), past = t.fine < today(), cur = currentTrip() && currentTrip().id === t.id;
     h += `<div class="card tap" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${cur ? '<span class="pill">in corso</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</div></div>
-      <div style="text-align:right"><div class="amt">${eur(tot.ale)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`; });
+      <div style="text-align:right"><div class="amt">${eur(tot.ale)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`;
+  });
   return h;
 }
 
@@ -192,7 +242,7 @@ function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
   const cs = tripChecks(t.id), tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
   const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
-  const byCat = {}; ss.forEach(s => byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.libri_ale || 0));
+  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.importo_eur || 0); });
   let h = `<div class="row"><button class="btn sm" onclick="go('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="muted" style="margin:6px 0 12px">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${t.paese ? ", " + esc(t.paese) : ""} · ${t.valuta || "EUR"}${t.fuso ? " · " + esc(t.fuso) : ""}</div>
     ${t.note ? `<div class="card small">${esc(t.note).replace(/\n/g, "<br>")}</div>` : ""}
@@ -204,10 +254,11 @@ function vTrip() {
         ${c.link ? `<a class="btn sm" href="${esc(c.link)}" target="_blank" rel="noopener">Apri</a>` : ""}
       </div>`).join("") : `<div class="muted">Nessuna voce</div>`}</div>
     <h2>Spese</h2>
-    <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Libri Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Libri Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${Math.round(tot.ale / t.budget * 100)}% usato</div></div>` : ""}</div>
+    <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
     ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
     <div class="card list">${ss.length ? ss.map(itemSpesa).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
     <button class="btn block" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa per questa trasferta</button>
+    ${bookingsSection(t)}
     <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
     <div class="card" onclick="formNota('${esc(baseName(t.nome))}')">${nota && nota.testo ? esc(nota.testo).replace(/\n/g, "<br>") : `<span class="muted">Hotel che vi è piaciuto, distanza dal campo, dove fare la spesa… tocca per scrivere</span>`}</div>
     <div class="row" style="margin-top:14px;gap:8px"><button class="btn grow" onclick="duplicaTrip('${t.id}')">Duplica per l'anno prossimo</button><button class="btn danger" onclick="delTrip('${t.id}')">Elimina</button></div>`;
@@ -216,14 +267,14 @@ function vTrip() {
 
 function bars(obj, total) {
   const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]); const max = Math.max(...keys.map(k => obj[k]), 1);
-  const tot = total || keys.reduce((a, k) => a + obj[k], 0);
-  return keys.map(k => `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt">${eur(obj[k])} <span class="muted">${Math.round(obj[k] / tot * 100)}%</span></span></div><div class="bar"><i style="width:${Math.max(2, obj[k] / max * 100)}%"></i></div></div>`).join("");
+  const tot = total || keys.reduce((a, k) => a + obj[k], 0) || 1;
+  return keys.map(k => `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt">${eur(obj[k])} <span class="muted">${pct(obj[k] / tot)}</span></span></div><div class="bar"><i style="width:${Math.max(2, obj[k] / max * 100)}%"></i></div></div>`).join("");
 }
 
 // ---- SPESE (lista con filtri)
 let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "" };
 function vSpese() {
-  const all = (D.spese || []);
+  const all = visibleSpese();
   const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
   if (!fSp.anno) fSp.anno = years[0] || "";
   const trips = [...new Set(all.filter(s => String(s.data).slice(0, 4) === fSp.anno).map(s => s.trasferta))].sort();
@@ -250,12 +301,12 @@ function vSpese() {
 // ---- SALDO
 function vSaldo() {
   const s = saldoTot();
-  const mov = (D.spese || []).filter(x => Math.abs(+x.saldo || 0) > 0.004).sort((a, b) => a.data < b.data ? 1 : -1);
+  const mov = visibleSpese().filter(x => Math.abs(+x.saldo || 0) > 0.004).sort((a, b) => a.data < b.data ? 1 : -1);
   const byTrip = {}; mov.forEach(x => byTrip[x.trasferta] = (byTrip[x.trasferta] || 0) + (+x.saldo));
   let h = `<h1>Conto tra voi</h1>
     <div class="card hero"><div class="muted">Saldo attuale</div><div class="big">${saldoLabel(s)}</div>
       <div class="muted" style="margin-top:6px">Le spese condivise pagate da uno creano il debito della quota dell'altro; i compensi caddie vanno a credito di Giulio; i pagamenti azzerano.</div></div>
-    <div class="row" style="gap:8px"><button class="btn grow" onclick="formSpesa(null,null,'caddie')">＋ Compenso caddie</button><button class="btn grow primary" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button></div>
+    <div class="row" style="gap:8px"><button class="btn grow" onclick="go('compensi')">💶 Compensi</button><button class="btn grow primary" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button></div>
     <h2>Per trasferta</h2><div class="card">${Object.keys(byTrip).sort((a, b) => Math.abs(byTrip[b]) - Math.abs(byTrip[a])).map(k => `<div class="row between" style="padding:6px 0"><span class="ellipsis">${esc(k)}</span><span class="amt" style="color:${byTrip[k] > 0 ? "var(--good)" : "var(--bad)"}">${byTrip[k] > 0 ? "+" : ""}${eur(byTrip[k])}</span></div>`).join("") || `<div class="muted">Nessun movimento</div>`}</div>
     <h2>Movimenti <span class="muted">(+ = Ale deve a Giulio)</span></h2><div class="card list">${mov.slice(0, 200).map(x => `<div class="item tap" onclick="formSpesa('${x.id}')"><div class="grow"><div class="ellipsis"><b>${esc(x.descrizione)}</b> <span class="pill ${x.tipo === "caddie" ? "warn" : x.tipo === "regolamento" ? "blue" : ""}">${TIPI[x.tipo]}</span></div><div class="muted">${fmtDY(x.data)} · ${esc(x.trasferta)} · ha pagato ${esc(x.pagato_da)}${x.tipo === "condivisa" ? " · tot " + eur(x.importo_eur) + " /" + x.n_persone : ""}</div></div><div class="amt" style="color:${x.saldo > 0 ? "var(--good)" : "var(--bad)"}">${x.saldo > 0 ? "+" : ""}${eur(x.saldo)}</div></div>`).join("")}</div>`;
   return h;
@@ -264,6 +315,8 @@ function vSaldo() {
 // ---- ALTRO
 function vAltro() {
   return `<h1>Altro</h1>
+    <div class="card tap" onclick="go('compensi')"><b>💶 Compensi caddie</b><div class="muted">Settimane, montepremi, 50% voli, cosa resta da pagare</div></div>
+    <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${(D.prenotazioni || []).filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
     <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
     <div class="card tap" onclick="go('documenti')"><b>🪪 Documenti</b><div class="muted">Passaporti, licenze, visti, assicurazioni</div></div>
     <div class="card tap" onclick="go('impostazioni')"><b>⚙️ Impostazioni</b><div class="muted">Categorie, checklist, report per il commercialista</div></div>
@@ -272,7 +325,7 @@ function vAltro() {
 
 // ---- DASHBOARD
 function vDashboard() {
-  const all = D.spese || []; const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
+  const all = visibleSpese(); const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
   const y = viewArg || years[0]; const ss = all.filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento");
   const ale = ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu = ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0);
   const caddie = ss.filter(s => s.tipo === "caddie").reduce((a, s) => a + (+s.importo_eur || 0), 0);
@@ -280,8 +333,8 @@ function vDashboard() {
   ss.filter(s => s.tipo !== "caddie").forEach(s => { byTrip[s.trasferta] = (byTrip[s.trasferta] || 0) + (+s.libri_ale || 0) + (s.tipo === "personale" && s.conto === "Giulio" ? +s.libri_giulio : 0); byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.importo_eur || 0); const m = String(s.data).slice(0, 7); byMonth[m] = (byMonth[m] || 0) + (+s.importo_eur || 0); });
   const months = Object.keys(byMonth).sort(); const mmax = Math.max(...months.map(m => byMonth[m]), 1);
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Dashboard</h1><select onchange="go('dashboard',this.value)">${years.map(yy => `<option ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select></div>
-    <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(ale - caddie)}</div><div class="l">Spese libri Alessandra</div></div><div class="kpi"><div class="v">${eur(giu)}</div><div class="l">Spese libri Giulio</div></div><div class="kpi"><div class="v">${eur(caddie)}</div><div class="l">Compensi caddie</div></div><div class="kpi"><div class="v">${ss.length}</div><div class="l">Movimenti</div></div></div>
-    <h2>Per mese <span class="muted">(totale pagato, tutte le spese)</span></h2><div class="card"><div style="display:flex;align-items:flex-end;gap:4px;height:120px">${months.map(m => `<div title="${m}: ${eur(byMonth[m])}" style="flex:1;background:var(--brand);border-radius:4px 4px 0 0;height:${Math.max(2, byMonth[m] / mmax * 100)}%"></div>`).join("")}</div><div style="display:flex;gap:4px;font-size:10px;color:var(--muted)">${months.map(m => `<div style="flex:1;text-align:center">${new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" })}</div>`).join("")}</div></div>
+    <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(ale - caddie)}</div><div class="l">Spese Alessandra</div></div><div class="kpi"><div class="v">${eur(giu)}</div><div class="l">Spese Giulio</div></div><div class="kpi"><div class="v">${eur(caddie)}</div><div class="l">Compensi caddie</div></div><div class="kpi"><div class="v">${ss.length}</div><div class="l">Movimenti</div></div></div>
+    <h2>Per mese <span class="muted">(totale pagato, tutte le spese)</span></h2><div class="card"><div style="display:flex;align-items:flex-end;gap:4px;height:120px">${months.map(m => `<div title="${m}: ${eur(byMonth[m])}" style="flex:1;background:var(--brand);border-radius:4px 4px 0 0;height:${Math.max(2, byMonth[m] / mmax * 100)}%"></div>`).join("")}</div><div style="display:flex;gap:4px;font-size:10px;color:var(--muted)">${months.map(m => `<div style="flex:1;text-align:center;line-height:1.2">${new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" })}<br><b style="color:var(--ink2)">${kfmt(byMonth[m])}</b></div>`).join("")}</div></div>
     <h2>Per trasferta</h2><div class="card">${bars(byTrip)}</div>
     <h2>Per categoria</h2><div class="card">${bars(byCat)}</div>`;
 }
@@ -316,20 +369,123 @@ async function makeReport() {
   catch (e) { toast("Errore: " + e.message, 4000); }
 }
 
+// ---------------------------------------------------------------- PRENOTAZIONI DA EMAIL
+const TIPO_PREN = { volo: "✈️ Volo", alloggio: "🏨 Alloggio", auto: "🚗 Auto", treno: "🚆 Treno", altro: "📧 Altro" };
+function bookingsSection(t) {
+  const list = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id && p.stato === "nuova");
+  if (!list.length) return "";
+  return `<h2>Trovate nella mail <span class="muted">(${list.length})</span></h2><div class="card list">${list.map(p => itemPren(p)).join("")}</div>`;
+}
+function itemPren(p) {
+  return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
+}
+function vPrenotazioni() {
+  const all = (D.prenotazioni || []).slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
+  const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "collegata");
+  const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
+  return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Prenotazioni email</h1><button class="btn sm primary" onclick="scanEmail()">Scansiona</button></div>
+    <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
+    <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
+    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div></div>`).join("")}</div>` : ""}`;
+}
+async function scanEmail() {
+  toast("Leggo la mail… (può volerci un minuto)", 8000);
+  try { const r = await api("email.scan"); D.prenotazioni = r.prenotazioni; LS.set("data", D); render(); toast(r.nuove ? `${r.nuove} nuove prenotazioni trovate` : "Nessuna prenotazione nuova"); }
+  catch (e) { toast("Errore: " + e.message, 5000); }
+}
+async function ignoraPren(id) {
+  try { await api("pren.stato", { id, stato: "ignorata" }); D.prenotazioni = D.prenotazioni.filter(p => p.id !== id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+function formPren(id) {
+  const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
+  const trips = (D.trasferte || []).slice().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  const sugg = { volo: ["Volo andata", "Volo ritorno"], alloggio: ["Alloggio"], auto: ["Auto"], treno: ["Treno"], altro: [] }[p.tipo] || [];
+  const tid0 = p.trasferta_id || (trips[0] || {}).id;
+  const voci = tid => tripChecks(tid);
+  const voceOptions = tid => { const cs = voci(tid); const pref = cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase())) && c.stato === "da_fare") || cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase()))); return cs.map(c => `<option value="${c.id}" ${pref && pref.id === c.id ? "selected" : ""}>${esc(c.voce)} (${STATI[c.stato]?.lab || c.stato})</option>`).join("") + `<option value="">＋ Nuova voce: ${esc(sugg[0] || p.oggetto.slice(0, 30))}</option>`; };
+  openModal(`<h2 style="margin-top:0">Collega prenotazione</h2>
+    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)}</div><div>${TIPO_PREN[p.tipo] || ""} ${p.inizio ? fmtDY(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtDY(p.fine) : "") : ""}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · codice <b>" + esc(p.codice) + "</b>" : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div>${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">apri la prenotazione</a>` : ""}</div>
+    <div class="field"><label>Trasferta</label><select id="pTrip">${trips.map(t => `<option value="${t.id}" ${t.id === tid0 ? "selected" : ""}>${esc(t.nome)} (${fmtD(t.inizio)}–${fmtD(t.fine)})</option>`).join("")}</select></div>
+    <div class="field"><label>Voce della checklist</label><select id="pVoce">${voceOptions(tid0)}</select></div>
+    <div class="row" style="gap:8px"><button class="btn primary grow" id="pSave">Collega</button><button class="btn" onclick="closeModal()">Annulla</button></div>`);
+  $("#pTrip").addEventListener("change", () => { $("#pVoce").innerHTML = voceOptions($("#pTrip").value); });
+  $("#pSave").addEventListener("click", async () => {
+    const trasferta_id = $("#pTrip").value, voce_id = $("#pVoce").value;
+    closeModal(); toast("Collego…");
+    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast("Collegata alla checklist"); }
+    catch (e) { toast("Errore: " + e.message, 5000); }
+  });
+}
+
+// ---------------------------------------------------------------- COMPENSI
+const RIS = { taglio: "Taglio superato", mancato: "Taglio mancato", vittoria: "Vittoria", np: "Non giocato" };
+function vCompensi() {
+  const st = D.settings || {}; const fisso = Number(st.compenso_fisso || 900);
+  const trips = (D.trasferte || []).filter(t => t.tipo !== "casa" && t.tipo !== "altro" && t.fine <= today()).sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  const comp = D.compensi || []; const byTrip = {}; comp.forEach(c => byTrip[c.trasferta_id] = c);
+  const tot = comp.reduce((a, c) => a + (+c.totale || 0), 0), pag = comp.filter(c => c.stato === "pagato").reduce((a, c) => a + (+c.totale || 0), 0);
+  const saldo = saldoTot();
+  let h = `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Compensi caddie</h1></div>
+    <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(tot)}</div><div class="l">Compensi maturati</div></div><div class="kpi"><div class="v">${eur(tot - pag)}</div><div class="l">Compensi non ancora saldati</div></div><div class="kpi"><div class="v">${eur(Math.abs(saldo))}</div><div class="l">${saldo > 0 ? "Netto che Alessandra deve a Giulio" : saldo < 0 ? "Netto che Giulio deve ad Alessandra" : "Netto: pari"}</div></div></div>
+    <div class="muted" style="margin-bottom:10px">Regole: ${eur(fisso)} a settimana di torneo · ${st.perc_taglio || 8}% del montepremi con taglio superato · ${st.perc_vittoria || 10}% con vittoria · 50% dei voli di Giulio nelle trasferte intercontinentali. Il netto tiene conto delle spese condivise e dei pagamenti già registrati.</div>
+    <div class="row" style="gap:8px;margin-bottom:8px"><button class="btn grow" onclick="segnaPagati()">Segna tutti come saldati</button><button class="btn grow primary" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button></div>`;
+  if (!trips.length) h += `<div class="empty">Nessuna settimana di torneo conclusa</div>`;
+  trips.forEach(t => { const c = byTrip[t.id];
+    h += `<div class="card tap" onclick="formCompenso('${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${t.tipo === "qualifica" ? '<span class="pill grey">qualifica</span>' : ""}${t.intercontinentale === "si" ? '<span class="pill blue">intercont.</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${c ? " · " + RIS[c.risultato] + (c.montepremi ? " · montepremi " + eur(c.montepremi) : "") : ""}</div>
+      ${c ? `<div class="muted">fisso ${eur(c.fisso)}${+c.quota_percentuale ? " + " + c.percentuale + "% = " + eur(c.quota_percentuale) : ""}${+c.rimborso_voli ? " + voli " + eur(c.rimborso_voli) : ""}${+c.extra ? " + extra " + eur(c.extra) : ""}</div>` : ""}</div>
+      <div style="text-align:right">${c ? `<div class="amt">${eur(c.totale)}</div><span class="pill ${c.stato === "pagato" ? "" : "warn"}">${c.stato === "pagato" ? "saldato" : "da saldare"}</span>` : `<span class="pill grey">da compilare</span>`}</div></div></div>`; });
+  return h;
+}
+function formCompenso(tripId) {
+  const t = (D.trasferte || []).find(x => x.id === tripId); if (!t) return;
+  const ex = (D.compensi || []).find(c => c.trasferta_id === tripId);
+  const st = D.settings || {};
+  const c = ex ? Object.assign({}, ex) : { trasferta_id: tripId, fisso: t.tipo === "torneo" ? Number(st.compenso_fisso || 900) : 0, montepremi: "", risultato: "taglio", extra: "", note: "", stato: "da_pagare" };
+  const voli = t.intercontinentale === "si" ? visibleSpese().filter(s => s.trasferta === t.nome && s.categoria === "Viaggio - Voli" && s.tipo === "personale" && s.conto === "Giulio").reduce((a, s) => a + (+s.importo_eur || 0), 0) : 0;
+  openModal(`<h2 style="margin-top:0">Compenso · ${esc(t.nome)}</h2>
+    <div class="cols"><div class="field"><label>Fisso settimana €</label><input id="kFisso" inputmode="decimal" value="${esc(c.fisso)}"></div><div class="field"><label>Montepremi Alessandra €</label><input id="kPrize" inputmode="decimal" value="${esc(c.montepremi)}" placeholder="0"></div></div>
+    <div class="field"><label>Risultato</label><div class="seg" id="segRis">${Object.keys(RIS).map(k => `<button data-v="${k}" class="${c.risultato === k ? "on" : ""}">${RIS[k]}</button>`).join("")}</div></div>
+    <div class="cols"><div class="field"><label>Extra € (opz.)</label><input id="kExtra" inputmode="decimal" value="${esc(c.extra)}"></div><div class="field"><label>Stato</label><select id="kStato"><option value="da_pagare" ${c.stato !== "pagato" ? "selected" : ""}>Da saldare</option><option value="pagato" ${c.stato === "pagato" ? "selected" : ""}>Saldato</option></select></div></div>
+    <div class="muted" style="margin-bottom:10px">${t.intercontinentale === "si" ? `Trasferta intercontinentale: voli di Giulio registrati ${eur(voli)} → rimborso 50% = <b>${eur(voli / 2)}</b> (aggiunto automaticamente). Registra i voli come spesa <i>personale</i> categoria Voli.` : "Trasferta non intercontinentale: nessun rimborso voli (modificabile nella trasferta)."}</div>
+    <div class="field"><label>Note</label><input id="kNote" value="${esc(c.note || "")}"></div>
+    <div id="kPrev" class="preview"></div>
+    <div class="row" style="gap:8px"><button class="btn primary grow" id="kSave">Salva</button>${ex ? `<button class="btn danger" id="kDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
+  const prev = () => { const perc = c.risultato === "vittoria" ? +(st.perc_vittoria || 10) : c.risultato === "taglio" ? +(st.perc_taglio || 8) : 0; const f = parseFloat(String($("#kFisso").value).replace(",", ".")) || 0, p = parseFloat(String($("#kPrize").value).replace(",", ".")) || 0, e = parseFloat(String($("#kExtra").value).replace(",", ".")) || 0; $("#kPrev").textContent = `Totale: ${eur(f)} + ${perc}% di ${eur(p)} (${eur(p * perc / 100)}) + voli ${eur(voli / 2)} + extra ${eur(e)} = ${eur(f + p * perc / 100 + voli / 2 + e)}`; };
+  $("#segRis").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; $("#segRis").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); c.risultato = b.dataset.v; prev(); });
+  ["#kFisso", "#kPrize", "#kExtra"].forEach(x => $(x).addEventListener("input", prev)); prev();
+  $("#kSave").addEventListener("click", async () => {
+    c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim(); c.stato = $("#kStato").value;
+    closeModal(); toast("Salvo…");
+    try { const r = await api("compenso.save", c); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); render(); toast("Compenso salvato: " + eur(r.compenso.totale)); }
+    catch (e) { toast("Errore: " + e.message, 4000); }
+  });
+  if (ex) $("#kDel").addEventListener("click", async () => { if (!confirm("Eliminare questo compenso (e la riga collegata nel saldo)?")) return; closeModal(); try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); } });
+}
+async function segnaPagati() {
+  const ids = (D.compensi || []).filter(c => c.stato !== "pagato").map(c => c.id);
+  if (!ids.length) return toast("Niente da saldare");
+  if (!confirm(`Segnare ${ids.length} compensi come saldati? (Il pagamento vero va registrato con "Registra pagamento")`)) return;
+  try { const r = await api("compenso.stato", { ids, stato: "pagato", data: today() }); r.forEach(c => { const i = D.compensi.findIndex(x => x.id === c.id); if (i >= 0) D.compensi[i] = c; }); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+
 // ---------------------------------------------------------------- FORM SPESA
 let pendingFile = null;
 function formSpesa(id, tripName, forceTipo) {
   const ex = id ? (D.spese || []).find(s => s.id === id) : null;
   const cur = currentTrip();
-  const s = ex ? Object.assign({}, ex) : { data: today(), trasferta: tripName || (cur ? cur.nome : ""), categoria: forceTipo === "caddie" ? "Golf - Caddie" : "", descrizione: "", importo: "", valuta: (cur && cur.valuta) || "EUR", pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: "Alessandra", note: "", cambio: "" };
+  const s = ex ? Object.assign({}, ex) : { data: today(), trasferta: tripName || (cur ? cur.nome : ""), categoria: forceTipo === "caddie" ? "Golf - Caddie" : "", descrizione: "", importo: "", valuta: (cur && cur.valuta) || "EUR", pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" };
   pendingFile = null;
-  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta)])].filter(Boolean).sort();
+  const TRIP_PRIV = ["casa", "altro"];
+  const miaSpesa = x => !(x.tipo === "personale" && x.conto && x.conto !== cfg.who);
+  const hoSpese = n => (D.spese || []).some(x => x.trasferta === n && miaSpesa(x));
+  const soloAltro = n => (D.spese || []).some(x => x.trasferta === n && !miaSpesa(x)) && !hoSpese(n);
+  const trips = [...new Set([...(D.trasferte || []).filter(t => !TRIP_PRIV.includes(String(t.tipo || "").toLowerCase()) || !soloAltro(t.nome)).map(t => t.nome), ...(D.spese || []).filter(miaSpesa).map(x => x.trasferta), s.trasferta])].filter(Boolean).sort();
   const cats = D.settings.categorie || []; const vals = D.settings.valute || ["EUR"];
   const isMov = s.tipo === "caddie" || s.tipo === "regolamento";
   openModal(`
     <h2 style="margin-top:0">${ex ? "Modifica" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}</h2>
     ${isMov ? "" : `<div class="field"><div class="seg" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
-    <div class="field" id="fConto" ${s.tipo !== "personale" ? "hidden" : ""}><label>Nei libri di</label><div class="seg" id="segConto">${PERSONE.map(p => `<button data-v="${p}" class="${s.conto === p ? "on" : ""}">${p}</button>`).join("")}</div></div>`}
+    <div class="field muted" id="fConto" ${s.tipo !== "personale" ? "hidden" : ""}>Spesa personale: finisce solo nei libri di ${cfg.who} e l'altro non la vede.</div>`}
     <div class="cols3"><div class="field"><label>Importo</label><input id="fImp" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"></div>
       <div class="field"><label>Valuta</label><select id="fVal">${[...new Set([s.valuta, ...vals])].map(v => `<option ${v === s.valuta ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
     <div class="preview" id="fPrev">${ex && s.valuta !== "EUR" ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
@@ -344,7 +500,7 @@ function formSpesa(id, tripName, forceTipo) {
     <div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">Salva</button>${ex ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
   seg("#segTipo", v => { s.tipo = v; $("#fConto").hidden = v !== "personale"; $("#fN").hidden = !(v === "condivisa" || v === "ciascuno"); });
-  seg("#segConto", v => s.conto = v); seg("#segChi", v => s.pagato_da = v); seg("#segN", v => s.n_persone = +v);
+  seg("#segChi", v => s.pagato_da = v); seg("#segN", v => s.n_persone = +v);
   $("#fTrip").addEventListener("change", e => { if (e.target.value === "__new") { const n = prompt("Nome nuova trasferta"); if (n) { const o = document.createElement("option"); o.textContent = n; e.target.insertBefore(o, e.target.firstChild); e.target.value = n; } else e.target.value = s.trasferta; } });
   const prev = async () => { const v = $("#fVal").value, imp = parseFloat(String($("#fImp").value).replace(",", ".")); if (!imp) return $("#fPrev").textContent = ""; if (v === "EUR") return $("#fPrev").textContent = ""; $("#fPrev").textContent = "cambio…"; try { const r = await api("fx", { valuta: v, data: $("#fData").value }); s.cambio = r.cambio; $("#fPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#fData").value)})`; } catch (e) { $("#fPrev").textContent = "cambio non disponibile (verrà calcolato al salvataggio)"; } };
   ["#fImp", "#fVal", "#fData"].forEach(x => $(x).addEventListener("change", prev));
@@ -355,6 +511,7 @@ function formSpesa(id, tripName, forceTipo) {
     if ($("#fCat")) s.categoria = $("#fCat").value; if (s.tipo === "regolamento") s.categoria = "Altro";
     if (!s.trasferta) return toast("Scegli la trasferta");
     if (s.valuta === "EUR") s.cambio = 1;
+    if (s.tipo === "personale") s.conto = cfg.who;
     if (!s.id) { s.id = uid(); s.creato = new Date().toISOString().slice(0, 19); s.inserito_da = cfg.who; }
     s.modificato = new Date().toISOString().slice(0, 19);
     // stima locale (il server ricalcola col cambio del giorno)
@@ -382,10 +539,13 @@ const toB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onl
 // ---------------------------------------------------------------- FORM TRASFERTA
 function formTrip(id, preset) {
   const ex = id ? (D.trasferte || []).find(t => t.id === id) : null;
-  const t = ex ? Object.assign({}, ex) : Object.assign({ nome: "", inizio: today(), fine: today(), citta: "", paese: "", valuta: "EUR", fuso: "", note: "", budget: "" }, preset || {});
+  const t = ex ? Object.assign({}, ex) : Object.assign({ nome: "", inizio: today(), fine: today(), citta: "", paese: "", valuta: "EUR", fuso: "", note: "", budget: "", tipo: "torneo", intercontinentale: "" }, preset || {});
+  const TIPI_T = { torneo: "Torneo (settimana pagata)", qualifica: "Qualifica / Q-School (non pagata)", casa: "Casa", altro: "Altro" };
   const vals = D.settings.valute || ["EUR"];
   openModal(`<h2 style="margin-top:0">${ex ? "Modifica" : "Nuova"} trasferta</h2>
     <div class="field"><label>Nome (es. Irish Open 2027)</label><input id="tNome" value="${esc(t.nome)}"></div>
+    <div class="cols"><div class="field"><label>Tipo</label><select id="tTipo">${Object.keys(TIPI_T).map(k => `<option value="${k}" ${(t.tipo || "torneo") === k ? "selected" : ""}>${TIPI_T[k]}</option>`).join("")}</select></div>
+      <div class="field"><label>Intercontinentale</label><select id="tInter"><option value="" ${t.intercontinentale !== "si" ? "selected" : ""}>No (Europa, Arabia, Marocco)</option><option value="si" ${t.intercontinentale === "si" ? "selected" : ""}>Sì → 50% voli Giulio</option></select></div></div>
     <div class="cols"><div class="field"><label>Arrivo / inizio</label><input id="tIni" type="date" value="${esc(t.inizio)}"></div><div class="field"><label>Partenza / fine</label><input id="tFine" type="date" value="${esc(t.fine)}"></div></div>
     <div class="cols"><div class="field"><label>Città</label><input id="tCitta" value="${esc(t.citta)}"></div><div class="field"><label>Paese</label><input id="tPaese" value="${esc(t.paese)}"></div></div>
     <div class="cols"><div class="field"><label>Valuta locale</label><select id="tVal">${[...new Set([t.valuta, ...vals])].map(v => `<option ${v === t.valuta ? "selected" : ""}>${v}</option>`).join("")}</select></div><div class="field"><label>Budget € (opz.)</label><input id="tBud" inputmode="decimal" value="${esc(t.budget)}"></div></div>
@@ -394,13 +554,13 @@ function formTrip(id, preset) {
     <div class="muted" style="margin-bottom:10px">Salvando viene creato/aggiornato l'evento nel calendario condiviso "Trasferte".</div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="tSave">Salva</button><button class="btn" onclick="closeModal()">Annulla</button></div>`);
   $("#tSave").addEventListener("click", async () => {
-    t.nome = $("#tNome").value.trim(); t.inizio = $("#tIni").value; t.fine = $("#tFine").value; t.citta = $("#tCitta").value.trim(); t.paese = $("#tPaese").value.trim(); t.valuta = $("#tVal").value; t.budget = $("#tBud").value.replace(",", ".") || ""; t.fuso = $("#tFuso").value.trim(); t.note = $("#tNote").value.trim();
+    t.nome = $("#tNome").value.trim(); t.inizio = $("#tIni").value; t.fine = $("#tFine").value; t.citta = $("#tCitta").value.trim(); t.paese = $("#tPaese").value.trim(); t.valuta = $("#tVal").value; t.budget = $("#tBud").value.replace(",", ".") || ""; t.fuso = $("#tFuso").value.trim(); t.note = $("#tNote").value.trim(); t.tipo = $("#tTipo").value; t.intercontinentale = $("#tInter").value;
     if (!t.nome) return toast("Dai un nome alla trasferta"); if (t.fine < t.inizio) return toast("La fine è prima dell'inizio");
     t.anno = t.inizio.slice(0, 4); const isNew = !t.id; if (isNew) t.id = uid();
     closeModal();
     const res = await write("trasferta.save", t, d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); (d.settings.checklist_template || []).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
-    if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); }
-    go("trip", t.id);
+    if (isNew) go("trip", t.id);
+    if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); render(); }
   });
 }
 async function delTrip(id) { if (!confirm("Eliminare la trasferta e la sua checklist? Le spese restano.")) return; await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); }); go("trasferte"); }
@@ -408,7 +568,7 @@ function duplicaTrip(id) {
   const t = (D.trasferte || []).find(x => x.id === id); if (!t) return;
   const shift = s => { const d = new Date(s + "T00:00:00"); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
   const y = String(Number(t.anno || t.inizio.slice(0, 4)) + 1);
-  formTrip(null, { nome: /\b20\d\d\b/.test(t.nome) ? t.nome.replace(/\b20\d\d\b/, y) : t.nome + " " + y, inizio: shift(t.inizio), fine: shift(t.fine), citta: t.citta, paese: t.paese, valuta: t.valuta, fuso: t.fuso, note: t.note, budget: t.budget });
+  formTrip(null, { nome: /\b20\d\d\b/.test(t.nome) ? t.nome.replace(/\b20\d\d\b/, y) : t.nome + " " + y, inizio: shift(t.inizio), fine: shift(t.fine), citta: t.citta, paese: t.paese, valuta: t.valuta, fuso: t.fuso, note: t.note, budget: t.budget, tipo: t.tipo, intercontinentale: t.intercontinentale });
 }
 
 // ---------------------------------------------------------------- CHECKLIST
@@ -470,7 +630,8 @@ function formDoc(id) {
 // ---------------------------------------------------------------- avvio
 (function init() {
   // configurazione via link: index.html#api=...&k=...
-  if (location.hash.includes("api=")) { const h = new URLSearchParams(location.hash.slice(1)); if (h.get("api")) cfg.api = h.get("api"); if (h.get("k")) cfg.token = h.get("k"); LS.set("cfg", cfg); history.replaceState(null, "", location.pathname); }
+  const src = location.hash.includes("api=") ? location.hash.slice(1) : (location.search.includes("api=") ? location.search.slice(1) : "");
+  if (src) { const h = new URLSearchParams(src); if (h.get("api")) cfg.api = h.get("api"); if (h.get("k")) cfg.token = h.get("k"); LS.set("cfg", cfg); history.replaceState(null, "", location.pathname); }
   render();
   if (cfg.api && cfg.token) { flushQueue().then(() => reload(true)); }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
