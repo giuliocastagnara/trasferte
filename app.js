@@ -497,13 +497,35 @@ async function makeReport() {
 
 // ---------------------------------------------------------------- PRENOTAZIONI DA EMAIL
 const TIPO_PREN = { volo: "✈️ Volo", alloggio: "🏨 Alloggio", auto: "🚗 Auto", treno: "🚆 Treno", altro: "📧 Altro" };
+// Lo script mette i dettagli letti dalla mail (orari, tratte, check-in/out,
+// ritiro/riconsegna) dentro p.note come JSON. Le righe vecchie non ce l'hanno.
+function dettPren(p) { try { const d = JSON.parse(p.note || "null"); return d && d.v >= 2 ? d : null; } catch (e) { return null; } }
+function prenQuando(p) {
+  const d = dettPren(p);
+  if (d && d.testo) return d.testo;
+  if (!p.inizio) return "date?";
+  return fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "");
+}
+// Una riga per segmento (volo/treno), altrimenti la sintesi.
+function prenRighe(p) {
+  const d = dettPren(p); if (!d) return [];
+  if (d.seg && d.seg.length) return d.seg.map(s => [
+    s.vol || "", s.data ? fmtD(s.data) : "", s.part || "",
+    s.da && s.a ? s.da + " → " + s.a : (s.da || s.a || ""),
+    s.arr ? "arr " + s.arr : ""
+  ].filter(Boolean).join(" · "));
+  return d.testo ? [d.testo] : [];
+}
 function bookingsSection(t) {
   const list = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id && p.stato === "nuova");
   if (!list.length) return "";
   return `<h2>Trovate nella mail <span class="muted">(${list.length})</span></h2><div class="card list">${list.map(p => itemPren(p)).join("")}</div>`;
 }
 function itemPren(p) {
-  return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
+  const righe = prenRighe(p);
+  return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
+    ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
+    <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
 }
 function vPrenotazioni() {
   const all = (D.prenotazioni || []).slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
@@ -511,7 +533,9 @@ function vPrenotazioni() {
   const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Prenotazioni email</h1><button class="btn sm primary" onclick="scanEmail()">Scansiona</button></div>
     <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
-    <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div><div class="muted ellipsis">${esc(p.mittente)} · ${p.inizio ? fmtD(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtD(p.fine) : "") : "date?"}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
+    <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => { const righe = prenRighe(p); return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
+      ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
+      <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
     ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div></div>`).join("")}</div>` : ""}`;
 }
 async function scanEmail() {
@@ -530,7 +554,9 @@ function formPren(id) {
   const voci = tid => tripChecks(tid);
   const voceOptions = tid => { const cs = voci(tid); const pref = cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase())) && c.stato === "da_fare") || cs.find(c => sugg.some(s => c.voce.toLowerCase().startsWith(s.toLowerCase()))); return cs.map(c => `<option value="${c.id}" ${pref && pref.id === c.id ? "selected" : ""}>${esc(c.voce)} (${STATI[c.stato]?.lab || c.stato})</option>`).join("") + `<option value="">＋ Nuova voce: ${esc(sugg[0] || p.oggetto.slice(0, 30))}</option>`; };
   openModal(`<h2 style="margin-top:0">Collega prenotazione</h2>
-    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)}</div><div>${TIPO_PREN[p.tipo] || ""} ${p.inizio ? fmtDY(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtDY(p.fine) : "") : ""}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · codice <b>" + esc(p.codice) + "</b>" : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div>${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">apri la prenotazione</a>` : ""}</div>
+    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)}</div><div>${TIPO_PREN[p.tipo] || ""} ${p.inizio ? fmtDY(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtDY(p.fine) : "") : ""}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · codice <b>" + esc(p.codice) + "</b>" : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div>
+    ${prenRighe(p).map(r => `<div class="dett">${esc(r)}</div>`).join("")}
+    <div class="muted" style="margin-top:6px">Questi dettagli finiscono nella voce della checklist.</div>${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">apri la prenotazione</a>` : ""}</div>
     <div class="field"><label>Trasferta</label><select id="pTrip">${trips.map(t => `<option value="${t.id}" ${t.id === tid0 ? "selected" : ""}>${esc(t.nome)} (${fmtD(t.inizio)}–${fmtD(t.fine)})</option>`).join("")}</select></div>
     <div class="field"><label>Voce della checklist</label><select id="pVoce">${voceOptions(tid0)}</select></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="pSave">Collega</button><button class="btn" onclick="closeModal()">Annulla</button></div>`);

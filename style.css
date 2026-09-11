@@ -32,6 +32,7 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .row.between{justify-content:space-between}
 .grow{flex:1;min-width:0}
 .muted{color:var(--muted);font-size:13px}
+.dett{color:var(--ink2);font-size:13px;line-height:1.35;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .small{font-size:13px}
 .big{font-size:30px;font-weight:700;letter-spacing:-.5px}
 .mono{font-variant-numeric:tabular-nums}
