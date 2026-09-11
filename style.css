@@ -2,6 +2,7 @@ html{color-scheme:light}
 :root{
   --bg:#f5f6f4; --card:#ffffff; --ink:#111; --ink2:#5a5a57; --muted:#8a8a86; --line:#e4e5e1;
   --brand:#1f6f4a; --brand-soft:#e3f1ea; --accent:#2a78d6; --warn:#eda100; --bad:#e34948; --good:#008300;
+  --in:#17915c; --in-soft:#e6f4ec; --out:#d94b45; --out-soft:#fbeceb;
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
   --radius:14px; --nav-h:58px;
 }
@@ -65,6 +66,21 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .bar{height:10px;border-radius:5px;background:var(--line);overflow:hidden;margin-top:4px}
 .bar i{display:block;height:100%;border-radius:5px;background:var(--brand)}
 .barrow{margin:8px 0} .barrow .row{font-size:14px}
+/* --- dashboard: entrate (verde) vs spese (rosso) --- */
+.in{color:var(--in)} .out{color:var(--out)}
+.bar2{display:flex;align-items:center;gap:8px;margin-top:4px}
+.bar2 .trk{flex:1;min-width:0;height:12px;border-radius:5px;background:var(--line);overflow:hidden}
+.bar2 .trk i{display:block;height:100%;border-radius:5px}
+.bar2 .trk i.in{background:var(--in)} .bar2 .trk i.out{background:var(--out)}
+.bar2 em{flex:0 0 76px;text-align:right;font-style:normal;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.mchart{display:flex;gap:3px;align-items:flex-end}
+.mcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:stretch}
+.mbars{display:flex;align-items:flex-end;justify-content:center;gap:2px;height:120px}
+.mbars i{display:block;flex:1 1 0;max-width:11px;min-height:2px;border-radius:3px 3px 0 0}
+.mbars i.in{background:var(--in)} .mbars i.out{background:var(--out)}
+.mlab{text-align:center;font-size:10px;line-height:1.35;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+.mlab b{font-size:11px}
+.leg i.sw-in{background:var(--in)} .leg i.sw-out{background:var(--out)}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-end;justify-content:center}
 .modal.hidden,.hidden{display:none!important}
 .sheet{background:var(--card);width:100%;max-width:720px;max-height:88dvh;max-height:88vh;overflow:auto;border-radius:18px 18px 0 0;padding:8px 16px calc(24px + env(safe-area-inset-bottom))}

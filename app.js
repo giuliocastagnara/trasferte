@@ -336,19 +336,65 @@ function vAltro() {
 }
 
 // ---- DASHBOARD
+// Entrate (guadagni) dell'anno per chi sta guardando:
+//  - Giulio      -> compenso caddie = fisso + % montepremi + rimborso voli + extra  (campo "totale")
+//  - Alessandra  -> montepremi vinto sul LET                                        (campo "montepremi")
+// La data usata e' la fine della trasferta collegata (in mancanza, l'inizio).
+function entrateAnno(y) {
+  const byId = {}; (D.trasferte || []).forEach(t => byId[t.id] = t);
+  return (D.compensi || []).map(c => {
+    const t = byId[c.trasferta_id];
+    const nome = c.trasferta || (t ? t.nome : "—");
+    const data = String((t && (t.fine || t.inizio)) || c.pagato_il || c.creato || "").slice(0, 10);
+    const val = Math.round((cfg.who === "Giulio" ? (+c.totale || 0) : (+c.montepremi || 0)) * 100) / 100;
+    return { nome, data, val };
+  }).filter(c => c.val > 0 && c.data.startsWith(y));
+}
+
 function vDashboard() {
   const all = visibleSpese(); const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
   const y = viewArg || years[0]; const ss = all.filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento");
   const ale = ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu = ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0);
   const caddie = ss.filter(s => s.tipo === "caddie").reduce((a, s) => a + (+s.importo_eur || 0), 0);
+  // USCITE: la quota a carico di chi guarda (stessa regola della pagina trasferta)
   const byTrip = {}, byCat = {}, byMonth = {};
-  ss.filter(s => s.tipo !== "caddie").forEach(s => { byTrip[s.trasferta] = (byTrip[s.trasferta] || 0) + (+s.libri_ale || 0) + (s.tipo === "personale" && s.conto === "Giulio" ? +s.libri_giulio : 0); byCat[s.categoria] = (byCat[s.categoria] || 0) + (+s.importo_eur || 0); const m = String(s.data).slice(0, 7); byMonth[m] = (byMonth[m] || 0) + (+s.importo_eur || 0); });
-  const months = Object.keys(byMonth).sort(); const mmax = Math.max(...months.map(m => byMonth[m]), 1);
+  ss.filter(s => s.tipo !== "caddie").forEach(s => { const v = mioImporto(s);
+    byTrip[s.trasferta] = (byTrip[s.trasferta] || 0) + v;
+    byCat[s.categoria] = (byCat[s.categoria] || 0) + v;
+    const m = String(s.data).slice(0, 7); byMonth[m] = (byMonth[m] || 0) + v; });
+  // ENTRATE
+  const inTrip = {}, inMonth = {}; const ent = entrateAnno(y);
+  ent.forEach(c => { inTrip[c.nome] = (inTrip[c.nome] || 0) + c.val; const m = c.data.slice(0, 7); inMonth[m] = (inMonth[m] || 0) + c.val; });
+  const totIn = ent.reduce((a, c) => a + c.val, 0), totOut = Object.keys(byMonth).reduce((a, m) => a + byMonth[m], 0);
+  const labIn = cfg.who === "Giulio" ? "Compensi caddie" : "Montepremi LET";
+  const months = [...new Set(Object.keys(byMonth).concat(Object.keys(inMonth)))].sort();
+  const mmax = Math.max(...months.map(m => Math.max(byMonth[m] || 0, inMonth[m] || 0)), 1);
+  const mese = m => new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" });
+  const legenda = `<div class="leg"><span><i class="sw-in"></i>Entrate · ${esc(labIn)}</span><span><i class="sw-out"></i>Spese a mio carico</span></div>`;
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Dashboard</h1><select onchange="go('dashboard',this.value)">${years.map(yy => `<option ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select></div>
     <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(ale - caddie)}</div><div class="l">Spese Alessandra</div></div><div class="kpi"><div class="v">${eur(giu)}</div><div class="l">Spese Giulio</div></div><div class="kpi"><div class="v">${eur(caddie)}</div><div class="l">Compensi caddie</div></div><div class="kpi"><div class="v">${ss.length}</div><div class="l">Movimenti</div></div></div>
-    <h2>Per mese <span class="muted">(totale pagato, tutte le spese)</span></h2><div class="card"><div style="display:flex;align-items:flex-end;gap:4px;height:120px">${months.map(m => `<div title="${m}: ${eur(byMonth[m])}" style="flex:1;background:var(--brand);border-radius:4px 4px 0 0;height:${Math.max(2, byMonth[m] / mmax * 100)}%"></div>`).join("")}</div><div style="display:flex;gap:4px;font-size:10px;color:var(--muted)">${months.map(m => `<div style="flex:1;text-align:center;line-height:1.2">${new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" })}<br><b style="color:var(--ink2)">${kfmt(byMonth[m])}</b></div>`).join("")}</div></div>
-    <h2>Per trasferta</h2><div class="card">${bars(byTrip)}</div>
-    <h2>Per categoria</h2><div class="card">${bars(byCat)}</div>`;
+    <div class="kpis"><div class="kpi"><div class="v in">${eur(totIn)}</div><div class="l">Entrate ${y} · ${esc(labIn)}</div></div><div class="kpi"><div class="v ${totIn - totOut < 0 ? "out" : "in"}">${eur(totIn - totOut)}</div><div class="l">Netto ${y} <span class="muted">(entrate − spese a mio carico)</span></div></div></div>
+    ${ent.length ? "" : `<div class="empty">Nessuna entrata registrata per il ${y}. Le entrate si compilano in <b>Compensi caddie</b>: apri la settimana di torneo e inserisci montepremi e risultato.</div>`}
+    <h2>Entrate e spese per mese</h2>
+    <div class="card">${months.length ? `<div class="mchart">${months.map(m => `<div class="mcol">
+        <div class="mbars"><i class="in" style="height:${(inMonth[m] || 0) / mmax * 100}%" title="Entrate ${m}: ${eur(inMonth[m] || 0)}"></i><i class="out" style="height:${(byMonth[m] || 0) / mmax * 100}%" title="Spese ${m}: ${eur(byMonth[m] || 0)}"></i></div>
+        <div class="mlab">${mese(m)}<br><b class="in">${kfmt(inMonth[m] || 0)}</b><br><b class="out">${kfmt(byMonth[m] || 0)}</b></div></div>`).join("")}</div>${legenda}` : `<div class="muted">Nessun dato</div>`}</div>
+    <h2>Per trasferta</h2><div class="card">${bars2(byTrip, inTrip)}${legenda}</div>
+    <h2>Per categoria <span class="muted">(solo spese)</span></h2><div class="card">${bars(byCat)}</div>`;
+}
+
+// Barre orizzontali doppie: verde = entrate, rosso = spese. Ordinate per volume totale.
+function bars2(out, inc) {
+  const keys = [...new Set(Object.keys(out).concat(Object.keys(inc)))];
+  if (!keys.length) return `<div class="muted">Nessun dato</div>`;
+  const tot = k => (out[k] || 0) + (inc[k] || 0);
+  keys.sort((a, b) => tot(b) - tot(a));
+  const max = Math.max(...keys.map(k => Math.max(out[k] || 0, inc[k] || 0)), 1);
+  return keys.map(k => { const o = out[k] || 0, i = inc[k] || 0, net = i - o;
+    return `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt"><span class="${net < 0 ? "out" : "in"}">${net >= 0 ? "+" : "−"}${eur(Math.abs(net))}</span></span></div>
+      <div class="bar2"><span class="trk"><i class="in" style="width:${i / max * 100}%"></i></span><em class="in">${i ? eur(i) : "—"}</em></div>
+      <div class="bar2"><span class="trk"><i class="out" style="width:${o / max * 100}%"></i></span><em class="out">${o ? eur(o) : "—"}</em></div></div>`;
+  }).join("");
 }
 
 // ---- DOCUMENTI
