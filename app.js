@@ -166,6 +166,11 @@ function vOggi() {
   }
   const nPren = (D.prenotazioni || []).filter(p => p.stato === "nuova").length;
   if (nPren) h += `<div class="card tap" onclick="go('prenotazioni')"><div class="row between"><div><b>📧 ${nPren} prenotazioni trovate nella mail</b><div class="muted">Tocca per collegarle alla checklist</div></div><span>›</span></div></div>`;
+  // Promemoria scontrini: solo le MIE spese dell'anno in corso a cui manca la foto
+  const annoOra = today().slice(0, 4), meseOra = today().slice(0, 7);
+  const noSc = mieSpese().filter(x => !x.scontrino && String(x.data).slice(0, 4) === annoOra);
+  const noScMese = noSc.filter(x => String(x.data).slice(0, 7) === meseOra).length;
+  if (noSc.length) h += `<div class="card tap" onclick="apriSenzaScontrino('${annoOra}')"><div class="row between"><div class="grow"><b>🧾 Scontrini mancanti</b><div class="muted">${noSc.length} spes${noSc.length === 1 ? "a" : "e"} senza foto nel ${annoOra}${noScMese ? ` · ${noScMese} di questo mese` : ""}</div></div><span class="pill ${noScMese ? "bad" : "warn"}">${noSc.length}</span><span>›</span></div></div>`;
   h += `<div class="card tap" onclick="go('saldo')"><div class="row between"><div><div class="muted">Conto tra voi</div><div style="font-weight:700;font-size:18px">${saldoLabel(s)}</div></div><span>›</span></div></div>`;
   if (nxt.length) {
     h += `<h2>Prossime trasferte</h2>`;
@@ -283,30 +288,65 @@ function bars(obj, total) {
   return keys.map(k => `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt">${eur(obj[k])} <span class="muted">${pct(obj[k] / tot)}</span></span></div><div class="bar"><i style="width:${Math.max(2, obj[k] / max * 100)}%"></i></div></div>`).join("");
 }
 
+// Apre la lista Spese già filtrata sulle spese senza scontrino dell'anno indicato.
+function apriSenzaScontrino(anno) {
+  fSp.q = ""; fSp.trip = ""; fSp.tipo = ""; fSp.cat = "";
+  fSp.anno = anno || today().slice(0, 4); fSp.noScont = true;
+  go("spese");
+}
+
 // ---- SPESE (lista con filtri)
-let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "" };
+// La pagina mostra SOLO le spese che compongono la carta "Spese <chi guarda>" della dashboard:
+// le mie personali + le condivise / ognuno-la-sua (per Giulio la sua quota, per Alessandra
+// l’intero, come mioImporto). Restano fuori le personali dell’altro (già filtrate dal server),
+// i compensi caddie e i pagamenti fra loro due: quelli si vedono in "Conto tra voi".
+const mieSpese = () => visibleSpese().filter(s => s.tipo !== "caddie" && s.tipo !== "regolamento" && Math.abs(mioImporto(s)) > 0.004);
+let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "", noScont: false };
 function vSpese() {
-  const all = visibleSpese();
-  const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
-  if (!fSp.anno) fSp.anno = years[0] || "";
-  const trips = [...new Set(all.filter(s => String(s.data).slice(0, 4) === fSp.anno).map(s => s.trasferta))].sort();
-  const cats = D.settings.categorie || [];
-  let list = all.filter(s => (!fSp.anno || String(s.data).startsWith(fSp.anno)) && (!fSp.trip || s.trasferta === fSp.trip) && (!fSp.tipo || s.tipo === fSp.tipo) && (!fSp.cat || s.categoria === fSp.cat) && (!fSp.q || (s.descrizione + " " + s.categoria + " " + s.trasferta).toLowerCase().includes(fSp.q.toLowerCase())));
+  const all = mieSpese();
+  const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].filter(y => /^\d{4}$/.test(y)).sort().reverse();
+  if (!fSp.anno || !years.includes(fSp.anno)) fSp.anno = years[0] || "";
+  const inAnno = all.filter(s => String(s.data).slice(0, 4) === fSp.anno);
+  const trips = [...new Set(inAnno.map(s => s.trasferta))].filter(Boolean).sort();
+  const tipiIn = new Set(inAnno.map(s => s.tipo));
+  const tipi = ["personale", "condivisa", "ciascuno"].filter(k => tipiIn.has(k));
+  const catIn = new Set(inAnno.map(s => s.categoria).filter(Boolean));
+  const catSet = D.settings.categorie || [];
+  const cats = catSet.filter(c => catIn.has(c)).concat([...catIn].filter(c => !catSet.includes(c)).sort());
+  // se un filtro punta a un valore che nell’anno scelto non esiste, lo lascio cadere
+  if (fSp.trip && !trips.includes(fSp.trip)) fSp.trip = "";
+  if (fSp.tipo && !tipi.includes(fSp.tipo)) fSp.tipo = "";
+  if (fSp.cat && !cats.includes(fSp.cat)) fSp.cat = "";
+  const q = fSp.q.trim().toLowerCase();
+  let list = inAnno.filter(s => (!fSp.trip || s.trasferta === fSp.trip) && (!fSp.tipo || s.tipo === fSp.tipo) && (!fSp.cat || s.categoria === fSp.cat) && (!fSp.noScont || !s.scontrino) && (!q || ((s.descrizione || "") + " " + (s.categoria || "") + " " + (s.trasferta || "")).toLowerCase().includes(q)));
   list.sort((a, b) => a.data < b.data ? 1 : a.data > b.data ? -1 : (b.creato || "") > (a.creato || "") ? 1 : -1);
-  const tot = list.reduce((a, s) => a + (+s.importo_eur || 0), 0);
+  const tot = Math.round(list.reduce((a, s) => a + mioImporto(s), 0) * 100) / 100;
+  const byM = {}; list.forEach(s => { const m = String(s.data).slice(0, 7); byM[m] = Math.round(((byM[m] || 0) + mioImporto(s)) * 100) / 100; });
+  const senzaS = list.filter(s => !s.scontrino).length;
+  const attivi = (q ? 1 : 0) + (fSp.trip ? 1 : 0) + (fSp.tipo ? 1 : 0) + (fSp.cat ? 1 : 0) + (fSp.noScont ? 1 : 0);
+  const nota = cfg.who === "Giulio"
+    ? "Solo le tue spese, come nella carta \u201cSpese Giulio\u201d: la tua quota delle condivise. Compensi e pagamenti sono in Conto tra voi."
+    : "Solo le tue spese, come nella carta \u201cSpese Alessandra\u201d: le tue e le condivise per intero. Compensi e pagamenti sono in Conto tra voi.";
   let h = `<h1>Spese</h1>
-    <div class="filters">
-      <input placeholder="Cerca…" value="${esc(fSp.q)}" oninput="fSp.q=this.value;render();" style="min-width:120px">
-      <select onchange="fSp.anno=this.value;fSp.trip='';render()">${years.map(y => `<option ${y === fSp.anno ? "selected" : ""}>${y}</option>`).join("")}</select>
-      <select onchange="fSp.trip=this.value;render()"><option value="">Tutte le trasferte</option>${trips.map(t => `<option ${t === fSp.trip ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
-      <select onchange="fSp.tipo=this.value;render()"><option value="">Tutti i tipi</option>${Object.keys(TIPI).map(k => `<option value="${k}" ${k === fSp.tipo ? "selected" : ""}>${TIPI[k]}</option>`).join("")}</select>
-      <select onchange="fSp.cat=this.value;render()"><option value="">Tutte le categorie</option>${cats.map(c => `<option ${c === fSp.cat ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+    <div class="card fbox">
+      <input class="fq" placeholder="Cerca descrizione, categoria, trasferta\u2026" value="${esc(fSp.q)}" oninput="fSp.q=this.value;render()">
+      <div class="fgrid">
+        <label class="fcell"><span>Anno</span><select onchange="fSp.anno=this.value;render()">${years.length ? years.map(y => `<option ${y === fSp.anno ? "selected" : ""}>${y}</option>`).join("") : `<option value="">\u2014</option>`}</select></label>
+        <label class="fcell"><span>Tipo</span><select onchange="fSp.tipo=this.value;render()"><option value="">Tutti i tipi</option>${tipi.map(k => `<option value="${k}" ${k === fSp.tipo ? "selected" : ""}>${TIPI[k]}</option>`).join("")}</select></label>
+        <label class="fcell"><span>Trasferta</span><select onchange="fSp.trip=this.value;render()"><option value="">Tutte le trasferte</option>${trips.map(t => `<option ${t === fSp.trip ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
+        <label class="fcell"><span>Categoria</span><select onchange="fSp.cat=this.value;render()"><option value="">Tutte le categorie</option>${cats.map(c => `<option ${c === fSp.cat ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+      </div>
+      <div class="frow">
+        <button class="btn sm ${fSp.noScont ? "primary" : ""}" onclick="fSp.noScont=!fSp.noScont;render()">\ud83e\uddfe Senza scontrino</button>
+        ${attivi ? `<button class="btn sm" onclick="fSp.q='';fSp.trip='';fSp.tipo='';fSp.cat='';fSp.noScont=false;render()">\u2715 Azzera filtri</button>` : ""}
+      </div>
     </div>
-    <div class="muted" style="margin-bottom:8px">${list.length} spese · totale ${eur(tot)}</div>`;
+    <div class="row between" style="margin-bottom:2px"><span class="muted">${list.length} spes${list.length === 1 ? "a" : "e"}${senzaS ? ` \u00b7 ${senzaS} senza scontrino` : ""}</span><span class="amt">${eur(tot)}</span></div>
+    <div class="muted small" style="margin-bottom:10px">${nota}</div>`;
   let lastM = ""; let open = false;
-  list.forEach(s => { const m = String(s.data).slice(0, 7); if (m !== lastM) { if (open) h += `</div>`; h += `<div class="month">${monthName(m + "-01")}</div><div class="card list">`; open = true; lastM = m; } h += itemSpesa(s); });
+  list.forEach(s => { const m = String(s.data).slice(0, 7); if (m !== lastM) { if (open) h += `</div>`; h += `<div class="month row between"><span>${monthName(m + "-01")}</span><span>${eur(byM[m])}</span></div><div class="card list">`; open = true; lastM = m; } h += itemSpesa(s, true); });
   if (open) h += `</div>`;
-  if (!list.length) h += `<div class="empty">Nessuna spesa</div>`;
+  if (!list.length) h += `<div class="empty">Nessuna spesa${attivi ? `<br><span class="small">Prova ad azzerare i filtri</span>` : ""}</div>`;
   return h;
 }
 
