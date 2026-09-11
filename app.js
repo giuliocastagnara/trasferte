@@ -10,6 +10,7 @@ const cfg = LS.get("cfg", { api: "", token: "", who: "" });
 let D = LS.get("data", null);                 // dati (boot)
 let queue = LS.get("queue", []);              // azioni in attesa (offline)
 let view = "oggi", viewArg = null, syncing = false, lastError = "";
+let checkOrdina = false;                      // modalità "riordina checklist" nella pagina trasferta
 const PERSONE = ["Giulio", "Alessandra"];
 const STATI = { da_fare: { ico: "", lab: "Da fare" }, prenotato: { ico: "📅", lab: "Prenotato" }, pagato: { ico: "✓", lab: "Pagato" }, na: { ico: "–", lab: "Non serve" } };
 const TIPI = { condivisa: "Condivisa", ciascuno: "Ognuno la sua parte", personale: "Personale", caddie: "Compenso caddie", regolamento: "Pagamento" };
@@ -124,7 +125,7 @@ function render() {
   $("#view").innerHTML = (map[view] || vOggi)();
   const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
-function go(v, arg) { view = v; viewArg = arg; render(); }
+function go(v, arg) { if (v !== "trip" || arg !== viewArg) checkOrdina = false; view = v; viewArg = arg; render(); }
 document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "add") return formSpesa(); go(b.dataset.v); }));
 $("#whoBtn").addEventListener("click", () => toast("Sei collegato come " + cfg.who + " (dipende dal token)"));
 
@@ -263,12 +264,15 @@ function vTrip() {
   let h = `<div class="row"><button class="btn sm" onclick="go('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="muted" style="margin:6px 0 12px">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${t.paese ? ", " + esc(t.paese) : ""} · ${t.valuta || "EUR"}${t.fuso ? " · " + esc(t.fuso) : ""}</div>
     ${t.note ? `<div class="card small">${esc(t.note).replace(/\n/g, "<br>")}</div>` : ""}
-    <div class="row between"><h2>Checklist</h2><button class="btn sm" onclick="formCheck(null,'${t.id}')">＋ voce</button></div>
-    <div class="card">${cs.length ? cs.map(c => `<div class="check ${c.stato}">
-        <div class="st ${c.stato}" onclick="cycleCheck('${c.id}')">${STATI[c.stato]?.ico || ""}</div>
-        <div class="grow" onclick="formCheck('${c.id}')"><div class="name">${esc(c.voce)} ${c.chi ? `<span class="muted">· ${esc(c.chi)}</span>` : ""}</div>
+    <div class="row between"><h2>Checklist</h2><div class="row" style="gap:6px">${cs.length > 1 ? `<button class="btn sm ${checkOrdina ? "primary" : ""}" onclick="toggleOrdinaCheck()">⇅ ${checkOrdina ? "Fatto" : "Ordina"}</button>` : ""}<button class="btn sm" onclick="formCheck(null,'${t.id}')">＋ voce</button></div></div>
+    ${checkOrdina ? `<div class="muted" style="margin:-4px 0 8px">Sposta le voci con ▲▼. Tocca "Fatto" per tornare a usare la checklist.</div>` : ""}
+    <div class="card">${cs.length ? cs.map((c, i) => `<div class="check ${c.stato}">
+        ${checkOrdina
+          ? `<div class="ordbtn"><button class="obtn" ${i === 0 ? "disabled" : ""} onclick="spostaCheck('${t.id}','${c.id}',-1)">▲</button><button class="obtn" ${i === cs.length - 1 ? "disabled" : ""} onclick="spostaCheck('${t.id}','${c.id}',1)">▼</button></div>`
+          : `<div class="st ${c.stato}" onclick="cycleCheck('${c.id}')">${STATI[c.stato]?.ico || ""}</div>`}
+        <div class="grow" ${checkOrdina ? "" : `onclick="formCheck('${c.id}')"`}><div class="name">${esc(c.voce)} ${c.chi ? `<span class="muted">· ${esc(c.chi)}</span>` : ""}</div>
           <div class="muted">${STATI[c.stato]?.lab || ""}${c.codice ? " · " + esc(c.codice) : ""}${c.note ? " · " + esc(c.note) : ""}</div></div>
-        ${c.link ? `<a class="btn sm" href="${esc(c.link)}" target="_blank" rel="noopener">Apri</a>` : ""}
+        ${!checkOrdina && c.link ? `<a class="btn sm" href="${esc(c.link)}" target="_blank" rel="noopener">Apri</a>` : ""}
       </div>`).join("") : `<div class="muted">Nessuna voce</div>`}</div>
     <h2>Spese</h2>
     <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
@@ -517,9 +521,15 @@ function prenRighe(p) {
   return d.testo ? [d.testo] : [];
 }
 function bookingsSection(t) {
-  const list = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id && p.stato === "nuova");
-  if (!list.length) return "";
-  return `<h2>Trovate nella mail <span class="muted">(${list.length})</span></h2><div class="card list">${list.map(p => itemPren(p)).join("")}</div>`;
+  const pren = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id);
+  const nuove = pren.filter(p => p.stato === "nuova"), fatte = pren.filter(p => p.stato === "collegata");
+  if (!nuove.length && !fatte.length) return "";
+  let h = "";
+  if (nuove.length) h += `<h2>Trovate nella mail <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.map(p => itemPren(p)).join("")}</div>`;
+  if (fatte.length) h += `<h2>Già collegate <span class="muted">(${fatte.length})</span></h2>
+    <div class="card list">${fatte.map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="dett">${esc(prenQuando(p))}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">"Scollega" la rimette fra quelle da collegare: serve se hai collegato la voce sbagliata o se hai cancellato le note qui sopra.</div>`;
+  return h;
 }
 function itemPren(p) {
   const righe = prenRighe(p);
@@ -530,21 +540,47 @@ function itemPren(p) {
 function vPrenotazioni() {
   const all = (D.prenotazioni || []).slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
   const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "collegata");
+  const ignorate = all.filter(p => p.stato === "ignorata");
   const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Prenotazioni email</h1><button class="btn sm primary" onclick="scanEmail()">Scansiona</button></div>
     <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
     <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => { const righe = prenRighe(p); return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
       ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
       <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
-    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div></div>`).join("")}</div>` : ""}`;
+    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">"Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
+    ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.oggetto)}</div><div class="muted">${esc(p.mittente)}</div></div><button class="btn sm" onclick="ripristinaPren('${p.id}')">Ripristina</button></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui.</div>` : ""}`;
 }
 async function scanEmail() {
   toast("Leggo la mail… (può volerci un minuto)", 8000);
   try { const r = await api("email.scan"); D.prenotazioni = r.prenotazioni; LS.set("data", D); render(); toast(r.nuove ? `${r.nuove} nuove prenotazioni trovate` : "Nessuna prenotazione nuova"); }
   catch (e) { toast("Errore: " + e.message, 5000); }
 }
+// La prenotazione resta in memoria come "ignorata" così puoi ripensarci subito;
+// il server non la rimanda più al prossimo caricamento.
 async function ignoraPren(id) {
-  try { await api("pren.stato", { id, stato: "ignorata" }); D.prenotazioni = D.prenotazioni.filter(p => p.id !== id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
+  try {
+    await api("pren.stato", { id, stato: "ignorata" });
+    const x = (D.prenotazioni || []).find(y => y.id === id); if (x) x.stato = "ignorata";
+    LS.set("data", D); render(); toast("Ignorata. Se hai sbagliato, in fondo alla pagina c'è \"Ripristina\".", 4000);
+  } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+async function ripristinaPren(id) {
+  try {
+    await api("pren.stato", { id, stato: "nuova" });
+    const x = (D.prenotazioni || []).find(y => y.id === id); if (x) x.stato = "nuova";
+    LS.set("data", D); render();
+  } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+// Annulla un "Collega" sbagliato: la prenotazione torna fra quelle da collegare,
+// mantenendo la trasferta. La voce di checklist non viene toccata.
+async function scollegaPren(id) {
+  const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
+  await write("pren.stato", { id, stato: "nuova", voce_id: "" }, d => {
+    const x = (d.prenotazioni || []).find(y => y.id === id); if (x) { x.stato = "nuova"; x.voce_id = ""; }
+  });
+  toast("Rimessa fra quelle da collegare. Ricollegandola, link, codice e dettagli vengono riscritti nella voce.", 5000);
 }
 function formPren(id) {
   const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
@@ -724,6 +760,20 @@ function duplicaTrip(id) {
 }
 
 // ---------------------------------------------------------------- CHECKLIST
+function toggleOrdinaCheck() { checkOrdina = !checkOrdina; render(); }
+
+// Sposta una voce di una posizione e rinumera tutta la checklist della trasferta.
+async function spostaCheck(tripId, id, dir) {
+  const cs = tripChecks(tripId);
+  const i = cs.findIndex(c => c.id === id), j = i + dir;
+  if (i < 0 || j < 0 || j >= cs.length) return;
+  const arr = cs.slice(); const [x] = arr.splice(i, 1); arr.splice(j, 0, x);
+  const ids = arr.map(c => c.id);
+  await write("check.ordina", { ids }, d => {
+    ids.forEach((cid, k) => { const c = (d.checklist || []).find(y => y.id === cid); if (c) c.ordine = k + 1; });
+  });
+}
+
 async function cycleCheck(id) {
   const c = (D.checklist || []).find(x => x.id === id); if (!c) return;
   const order = ["da_fare", "prenotato", "pagato", "na"]; c.stato = order[(order.indexOf(c.stato) + 1) % order.length];
