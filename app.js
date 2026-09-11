@@ -213,10 +213,13 @@ let trVirt = [];
 // Colore della carta per tipo di trasferta: torneo resta bianco.
 const TIPO_CARD = { qualifica: " t-qualifica", casa: " t-casa", altro: " t-altro" };
 const cardCls = tp => TIPO_CARD[String(tp || "").toLowerCase()] || "";
-function apriSpeseTrip(i) {
+// Trasferte che esistono solo nelle spese: toccandole si crea la scheda,
+// cosi' diventano modificabili come tutte le altre. Il nome NON va cambiato:
+// le spese sono collegate alla trasferta per nome.
+function creaScheda(i) {
   const t = trVirt[i]; if (!t) return;
-  fSp = { q: "", trip: t.nome, tipo: "", cat: "", anno: String(t.anno || (t.inizio || "").slice(0, 4) || "") };
-  go("spese");
+  toast("Questa trasferta non ha ancora una scheda. Non cambiare il nome: le spese sono collegate per nome.", 5000);
+  formTrip(null, { nome: t.nome, inizio: t.inizio, fine: t.fine, tipo: "altro" });
 }
 function vTrasferte() {
   const all = trasferteVisibili().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
@@ -231,7 +234,7 @@ function vTrasferte() {
   list.forEach(t => {
     if (t.virtuale) {
       const tot = tripTotals(t.nome), sp = tripSpese(t.nome).reduce((a, s) => a + (+s.importo_eur || 0), 0);
-      h += `<div class="card tap t-altro" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
+      h += `<div class="card tap t-altro" onclick="creaScheda(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
         <div style="text-align:right"><div class="amt">${eur(sp)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
       return;
     }
