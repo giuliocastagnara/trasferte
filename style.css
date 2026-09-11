@@ -85,3 +85,13 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .leg{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--ink2);margin-top:8px}
 .leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:6px}
+
+/* Pagina Trasferte: colore della carta per tipo di trasferta (torneo = bianco) */
+.card.t-qualifica{background:#eaf2fc;border-color:#cfe0f6}
+.card.t-casa{background:#e9f3ed;border-color:#c9e2d5}
+.card.t-altro{background:#fdf5e2;border-color:#f0e2bb}
+.leg.trip{margin:0 0 12px}
+.leg i.t-torneo{background:var(--card);border:1px solid var(--line)}
+.leg i.t-qualifica{background:#eaf2fc;border:1px solid #cfe0f6}
+.leg i.t-casa{background:#e9f3ed;border:1px solid #c9e2d5}
+.leg i.t-altro{background:#fdf5e2;border:1px solid #f0e2bb}

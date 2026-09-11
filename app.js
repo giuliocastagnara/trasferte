@@ -210,6 +210,9 @@ function trasferteVisibili() {
   return reali.concat(virtuali);
 }
 let trVirt = [];
+// Colore della carta per tipo di trasferta: torneo resta bianco.
+const TIPO_CARD = { qualifica: " t-qualifica", casa: " t-casa", altro: " t-altro" };
+const cardCls = tp => TIPO_CARD[String(tp || "").toLowerCase()] || "";
 function apriSpeseTrip(i) {
   const t = trVirt[i]; if (!t) return;
   fSp = { q: "", trip: t.nome, tipo: "", cat: "", anno: String(t.anno || (t.inizio || "").slice(0, 4) || "") };
@@ -221,18 +224,19 @@ function vTrasferte() {
   const years = [...new Set(all.map(t => String(t.anno || (t.inizio || "").slice(0, 4))))].sort().reverse();
   const y = viewArg || years[0] || String(new Date().getFullYear());
   let h = `<div class="row between"><h1>Trasferte</h1><button class="btn sm primary" onclick="formTrip()">＋ Nuova</button></div>
-    <div class="filters">${years.map(yy => `<button class="btn sm ${yy === y ? "primary" : ""}" onclick="go('trasferte','${yy}')">${yy}</button>`).join("")}</div>`;
+    <div class="filters">${years.map(yy => `<button class="btn sm ${yy === y ? "primary" : ""}" onclick="go('trasferte','${yy}')">${yy}</button>`).join("")}</div>
+    <div class="leg trip"><span><i class="t-torneo"></i>Torneo</span><span><i class="t-qualifica"></i>Qualifica</span><span><i class="t-casa"></i>Casa</span><span><i class="t-altro"></i>Altro</span></div>`;
   const list = all.filter(t => String(t.anno || (t.inizio || "").slice(0, 4)) === y);
   if (!list.length) h += `<div class="empty">Nessuna trasferta per il ${y}</div>`;
   list.forEach(t => {
     if (t.virtuale) {
       const tot = tripTotals(t.nome), sp = tripSpese(t.nome).reduce((a, s) => a + (+s.importo_eur || 0), 0);
-      h += `<div class="card tap" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> <span class="pill grey">solo spese</span><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
+      h += `<div class="card tap t-altro" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> <span class="pill grey">solo spese</span><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
         <div style="text-align:right"><div class="amt">${eur(sp)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
       return;
     }
     const cs = checkSummary(t.id), tot = tripTotals(t.nome), past = t.fine < today(), cur = currentTrip() && currentTrip().id === t.id;
-    h += `<div class="card tap" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${cur ? '<span class="pill">in corso</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</div></div>
+    h += `<div class="card tap${cardCls(t.tipo)}" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${cur ? '<span class="pill">in corso</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</div></div>
       <div style="text-align:right"><div class="amt">${eur(tot.ale)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`;
   });
   return h;
