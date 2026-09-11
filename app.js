@@ -351,11 +351,27 @@ function entrateAnno(y) {
   }).filter(c => c.val > 0 && c.data.startsWith(y));
 }
 
+// Solo le settimane di gara: tipo "torneo" o "qualifica". Le trasferte senza riga nel
+// tab Trasferte non hanno tipo e restano fuori (creare la scheda dalla pagina Trasferte).
+function tipiTrasferta() { const m = {}; (D.trasferte || []).forEach(t => m[t.nome] = String(t.tipo || "").toLowerCase()); return m; }
+const isGara = (nome, tipi) => tipi[nome] === "torneo" || tipi[nome] === "qualifica";
+
+// Spese Team = quanto è costata davvero la stagione in giro: ogni spesa delle settimane di
+// gara contata UNA volta per il suo importo pieno, chiunque abbia pagato e su qualunque libro
+// finisca. Fuori restano le settimane casa/altro, i compensi caddie e i pagamenti (giro interno).
+// Il totale esatto arriva dal server (D.team, calcolato sui due ledger insieme); senza di quello
+// l'app può sommare solo ciò che vede e mancano le spese personali dell'altra persona.
+function speseTeam(y, tipi) {
+  const srv = (D.team || {})[y];
+  if (srv != null && srv !== "") return { val: Math.round((+srv || 0) * 100) / 100, esatto: true };
+  const ss = visibleSpese().filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento" && s.tipo !== "caddie" && isGara(s.trasferta, tipi));
+  return { val: Math.round(ss.reduce((a, s) => a + (+s.importo_eur || 0), 0) * 100) / 100, esatto: false };
+}
+
 function vDashboard() {
   const all = visibleSpese(); const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
   const y = viewArg || years[0]; const ss = all.filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento");
-  const ale = ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu = ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0);
-  const caddie = ss.filter(s => s.tipo === "caddie").reduce((a, s) => a + (+s.importo_eur || 0), 0);
+  const tipi = tipiTrasferta();
   // USCITE: la quota a carico di chi guarda (stessa regola della pagina trasferta)
   const byTrip = {}, byCat = {}, byMonth = {};
   ss.filter(s => s.tipo !== "caddie").forEach(s => { const v = mioImporto(s);
@@ -365,33 +381,45 @@ function vDashboard() {
   // ENTRATE
   const inTrip = {}, inMonth = {}; const ent = entrateAnno(y);
   ent.forEach(c => { inTrip[c.nome] = (inTrip[c.nome] || 0) + c.val; const m = c.data.slice(0, 7); inMonth[m] = (inMonth[m] || 0) + c.val; });
-  const totIn = ent.reduce((a, c) => a + c.val, 0), totOut = Object.keys(byMonth).reduce((a, m) => a + byMonth[m], 0);
-  const labIn = cfg.who === "Giulio" ? "Compensi caddie" : "Montepremi LET";
+  const totIn = Math.round(ent.reduce((a, c) => a + c.val, 0) * 100) / 100;
+  const totOut = Math.round(Object.keys(byMonth).reduce((a, m) => a + byMonth[m], 0) * 100) / 100;
+  const team = speseTeam(y, tipi);
+  const labIn = cfg.who === "Giulio" ? "Compensi caddie" : "Vincite";
   const months = [...new Set(Object.keys(byMonth).concat(Object.keys(inMonth)))].sort();
   const mmax = Math.max(...months.map(m => Math.max(byMonth[m] || 0, inMonth[m] || 0)), 1);
   const mese = m => new Date(m + "-01T00:00:00").toLocaleDateString("it-IT", { month: "short" });
   const legenda = `<div class="leg"><span><i class="sw-in"></i>Entrate · ${esc(labIn)}</span><span><i class="sw-out"></i>Spese a mio carico</span></div>`;
+  // solo tornei e qualifiche, dal profitto più alto alla perdita più grande
+  const gare = {}, gareIn = {};
+  Object.keys(byTrip).forEach(k => { if (isGara(k, tipi)) gare[k] = byTrip[k]; });
+  Object.keys(inTrip).forEach(k => { if (isGara(k, tipi)) gareIn[k] = inTrip[k]; });
   return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Dashboard</h1><select onchange="go('dashboard',this.value)">${years.map(yy => `<option ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select></div>
-    <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(ale - caddie)}</div><div class="l">Spese Alessandra</div></div><div class="kpi"><div class="v">${eur(giu)}</div><div class="l">Spese Giulio</div></div><div class="kpi"><div class="v">${eur(caddie)}</div><div class="l">Compensi caddie</div></div><div class="kpi"><div class="v">${ss.length}</div><div class="l">Movimenti</div></div></div>
-    <div class="kpis"><div class="kpi"><div class="v in">${eur(totIn)}</div><div class="l">Entrate ${y} · ${esc(labIn)}</div></div><div class="kpi"><div class="v ${totIn - totOut < 0 ? "out" : "in"}">${eur(totIn - totOut)}</div><div class="l">Netto ${y} <span class="muted">(entrate − spese a mio carico)</span></div></div></div>
+    <div class="kpis" style="margin-top:12px">
+      <div class="kpi"><div class="v">${eur(team.val)}</div><div class="l">Spese Team ${y}${team.esatto ? "" : ` <span class="muted">(solo visibili)</span>`}</div></div>
+      <div class="kpi"><div class="v">${eur(totOut)}</div><div class="l">Spese ${esc(cfg.who)}</div></div>
+      <div class="kpi"><div class="v in">${eur(totIn)}</div><div class="l">${esc(labIn)} ${y}</div></div>
+      <div class="kpi"><div class="v ${totIn - totOut < 0 ? "out" : "in"}">${eur(totIn - totOut)}</div><div class="l">Netto ${y} <span class="muted">(entrate − spese ${esc(cfg.who)})</span></div></div>
+    </div>
+    <div class="muted small" style="margin:-4px 0 12px">Spese Team: quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno.${team.esatto ? "" : " <b>Per ora somma solo le spese visibili da questa app</b>: mancano le personali dell'altra persona."}</div>
     ${ent.length ? "" : `<div class="empty">Nessuna entrata registrata per il ${y}. Le entrate si compilano in <b>Compensi caddie</b>: apri la settimana di torneo e inserisci montepremi e risultato.</div>`}
     <h2>Entrate e spese per mese</h2>
     <div class="card">${months.length ? `<div class="mchart">${months.map(m => `<div class="mcol">
         <div class="mbars"><i class="in" style="height:${(inMonth[m] || 0) / mmax * 100}%" title="Entrate ${m}: ${eur(inMonth[m] || 0)}"></i><i class="out" style="height:${(byMonth[m] || 0) / mmax * 100}%" title="Spese ${m}: ${eur(byMonth[m] || 0)}"></i></div>
         <div class="mlab">${mese(m)}<br><b class="in">${kfmt(inMonth[m] || 0)}</b><br><b class="out">${kfmt(byMonth[m] || 0)}</b></div></div>`).join("")}</div>${legenda}` : `<div class="muted">Nessun dato</div>`}</div>
-    <h2>Per trasferta</h2><div class="card">${bars2(byTrip, inTrip)}${legenda}</div>
+    <h2>Per trasferta <span class="muted">(tornei e qualifiche)</span></h2><div class="card">${bars2(gare, gareIn)}${legenda}</div>
     <h2>Per categoria <span class="muted">(solo spese)</span></h2><div class="card">${bars(byCat)}</div>`;
 }
 
-// Barre orizzontali doppie: verde = entrate, rosso = spese. Ordinate per volume totale.
+// Barre orizzontali doppie: verde = entrate, rosso = spese.
+// Ordine: dal profitto più alto alla perdita più grande (netto decrescente).
 function bars2(out, inc) {
   const keys = [...new Set(Object.keys(out).concat(Object.keys(inc)))];
   if (!keys.length) return `<div class="muted">Nessun dato</div>`;
-  const tot = k => (out[k] || 0) + (inc[k] || 0);
-  keys.sort((a, b) => tot(b) - tot(a));
+  const net = k => (inc[k] || 0) - (out[k] || 0);
+  keys.sort((a, b) => net(b) - net(a));
   const max = Math.max(...keys.map(k => Math.max(out[k] || 0, inc[k] || 0)), 1);
-  return keys.map(k => { const o = out[k] || 0, i = inc[k] || 0, net = i - o;
-    return `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt"><span class="${net < 0 ? "out" : "in"}">${net >= 0 ? "+" : "−"}${eur(Math.abs(net))}</span></span></div>
+  return keys.map(k => { const o = out[k] || 0, i = inc[k] || 0, n = i - o;
+    return `<div class="barrow"><div class="row between"><span class="ellipsis">${esc(k)}</span><span class="amt"><span class="${n < 0 ? "out" : "in"}">${n >= 0 ? "+" : "−"}${eur(Math.abs(n))}</span></span></div>
       <div class="bar2"><span class="trk"><i class="in" style="width:${i / max * 100}%"></i></span><em class="in">${i ? eur(i) : "—"}</em></div>
       <div class="bar2"><span class="trk"><i class="out" style="width:${o / max * 100}%"></i></span><em class="out">${o ? eur(o) : "—"}</em></div></div>`;
   }).join("");
