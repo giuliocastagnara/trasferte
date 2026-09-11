@@ -231,7 +231,7 @@ function vTrasferte() {
   list.forEach(t => {
     if (t.virtuale) {
       const tot = tripTotals(t.nome), sp = tripSpese(t.nome).reduce((a, s) => a + (+s.importo_eur || 0), 0);
-      h += `<div class="card tap t-altro" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> <span class="pill grey">solo spese</span><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
+      h += `<div class="card tap t-altro" onclick="apriSpeseTrip(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
         <div style="text-align:right"><div class="amt">${eur(sp)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
       return;
     }
