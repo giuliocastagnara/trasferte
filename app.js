@@ -274,8 +274,9 @@ function vTrip() {
           : `<div class="st ${c.stato}" onclick="cycleCheck('${c.id}')">${STATI[c.stato]?.ico || ""}</div>`}
         <div class="grow" ${checkOrdina ? "" : `onclick="formCheck('${c.id}')"`}><div class="name">${esc(c.voce)} ${c.chi ? `<span class="muted">· ${esc(c.chi)}</span>` : ""}</div>
           <div class="muted">${STATI[c.stato]?.lab || ""}${c.codice ? " · " + esc(c.codice) : ""}${c.note ? " · " + esc(c.note) : ""}</div></div>
-        ${!checkOrdina && c.link ? `<a class="btn sm" href="${esc(c.link)}" target="_blank" rel="noopener">Apri</a>` : ""}
+        ${checkOrdina ? "" : bottoniVoce(c)}
       </div>`).join("") : `<div class="muted">Nessuna voce</div>`}</div>
+    ${cs.some(c => prenDiVoce(c.id)) ? `<div class="muted" style="margin:6px 0 0">✉️ apre la mail della prenotazione · 📄 il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella pagina Prenotazioni.</div>` : ""}
     <h2>Spese</h2>
     <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
     ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
@@ -507,6 +508,35 @@ const TIPO_PREN = { volo: "✈️ Volo", alloggio: "🏨 Alloggio", auto: "🚗 
 // Lo script mette i dettagli letti dalla mail (orari, tratte, check-in/out,
 // ritiro/riconsegna) dentro p.note come JSON. Le righe vecchie non ce l'hanno.
 function dettPren(p) { try { const d = JSON.parse(p.note || "null"); return d && d.v >= 2 ? d : null; } catch (e) { return null; } }
+// Link alla MAIL: si costruisce dal msg_id, che e' gia' su ogni riga di
+// Prenotazioni, quindi funziona anche per le prenotazioni collegate mesi fa.
+// Il modello arriva dal server (Impostazioni -> gmail_link) cosi' si puo'
+// cambiare forma senza ripubblicare la app.
+const GMAIL_LINK_FALLBACK = "https://mail.google.com/mail/u/?authuser=giulio.castagnara@gmail.com#all/{id}";
+function linkMail(msgId) {
+  if (!msgId) return "";
+  const tpl = (D.settings && D.settings.gmail_link) || GMAIL_LINK_FALLBACK;
+  return tpl.indexOf("{id}") >= 0 ? tpl.replace("{id}", encodeURIComponent(msgId)) : tpl + encodeURIComponent(msgId);
+}
+// PDF della prenotazione: sta nel JSON della colonna note, nessuna colonna nuova.
+function pdfPren(p) { try { const d = JSON.parse(p.note || "null"); return (d && d.pdf) || ""; } catch (e) { return ""; } }
+// Quale prenotazione e' agganciata a una voce di checklist.
+function prenDiVoce(voceId) {
+  if (!voceId) return null;
+  return (D.prenotazioni || []).find(p => p.voce_id === voceId && p.stato === "collegata") || null;
+}
+// Bottoni della voce di checklist. Ordine voluto: prima la MAIL (al gate il link
+// del fornitore chiede login e rete), poi il PDF su Drive, che si apre anche in
+// modalita' aereo. Il link del fornitore sta nella pagina Prenotazioni.
+// Una voce senza prenotazione tiene il suo "Apri" di sempre.
+function bottoniVoce(c) {
+  const p = prenDiVoce(c.id), b = [];
+  if (p && p.msg_id) b.push('<a class="btn sm" href="' + esc(linkMail(p.msg_id)) + '" target="_blank" rel="noopener" title="Apri la mail">✉️</a>');
+  const pdf = p ? pdfPren(p) : "";
+  if (pdf) b.push('<a class="btn sm" href="' + esc(pdf) + '" target="_blank" rel="noopener" title="Apri il PDF (funziona offline)">📄</a>');
+  if (!b.length && c.link) b.push('<a class="btn sm" href="' + esc(c.link) + '" target="_blank" rel="noopener">Apri</a>');
+  return b.length ? '<div style="display:flex;gap:6px;flex:0 0 auto">' + b.join("") + '</div>' : "";
+}
 function prenQuando(p) {
   const d = dettPren(p);
   if (d && d.testo) return d.testo;
@@ -530,7 +560,8 @@ function bookingsSection(t) {
   let h = "";
   if (nuove.length) h += `<h2>Trovate nella mail <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.map(p => itemPren(p)).join("")}</div>`;
   if (fatte.length) h += `<h2>Già collegate <span class="muted">(${fatte.length})</span></h2>
-    <div class="card list">${fatte.map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="dett">${esc(prenQuando(p))}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+    <div class="card list">${fatte.map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="dett">${esc(prenQuando(p))}</div>
+      ${p.link || pdfPren(p) ? `<div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a>` : ""}${p.link && pdfPren(p) ? " · " : ""}${pdfPren(p) ? `<a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div>` : ""}</div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">"Scollega" la rimette fra quelle da collegare: serve se hai collegato la voce sbagliata o se hai cancellato le note qui sopra.</div>`;
   return h;
 }
@@ -550,8 +581,9 @@ function vPrenotazioni() {
     <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => { const righe = prenRighe(p); return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
       ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
       <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
-    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
-    <div class="muted" style="margin-top:6px">"Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
+    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div>
+      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p.msg_id))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">Il link del fornitore vive qui: serve per il check-in e per cambiare una prenotazione. Sulla voce di checklist ci sono invece la mail e il PDF, che reggono anche senza rete. "Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
     ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.oggetto)}</div><div class="muted">${esc(p.mittente)}</div></div><button class="btn sm" onclick="ripristinaPren('${p.id}')">Ripristina</button></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui.</div>` : ""}`;
 }
@@ -603,7 +635,8 @@ function formPren(id) {
   $("#pSave").addEventListener("click", async () => {
     const trasferta_id = $("#pTrip").value, voce_id = $("#pVoce").value;
     closeModal(); toast("Collego…");
-    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast("Collegata alla checklist"); }
+    toast("Collego e salvo il PDF in Drive…", 15000);
+    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast(pdfPren(r.prenotazione) ? "Collegata: sulla voce trovi ✉️ mail e 📄 PDF" : "Collegata. Il PDF non è riuscito, ma la mail c'è", 5000); }
     catch (e) { toast("Errore: " + e.message, 5000); }
   });
 }
