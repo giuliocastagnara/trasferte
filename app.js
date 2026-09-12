@@ -512,14 +512,30 @@ function dettPren(p) { try { const d = JSON.parse(p.note || "null"); return d &&
 // Prenotazioni, quindi funziona anche per le prenotazioni collegate mesi fa.
 // Il modello arriva dal server (Impostazioni -> gmail_link) cosi' si puo'
 // cambiare forma senza ripubblicare la app.
-const GMAIL_LINK_FALLBACK = "https://mail.google.com/mail/u/?authuser=giulio.castagnara@gmail.com#all/{id}";
-function linkMail(msgId) {
-  if (!msgId) return "";
-  const tpl = (D.settings && D.settings.gmail_link) || GMAIL_LINK_FALLBACK;
-  return tpl.indexOf("{id}") >= 0 ? tpl.replace("{id}", encodeURIComponent(msgId)) : tpl + encodeURIComponent(msgId);
+// Forma buona: la RICERCA per Message-Id, con in coda l'id del messaggio.
+// Il vecchio #all/<id esadecimale> lo risolve solo Gmail sul computer: su iPhone
+// cade sulla posta in arrivo. Cosi' invece, se il telefono non risolve la coda,
+// resta la ricerca, che mostra comunque QUEL messaggio e basta. Anche
+// ?authuser=<mail> e' da evitare: fa un redirect e il pezzo dopo il # si perde.
+// L'account e' il numero in /u/N/ (impostazione gmail_u): se e' quello sbagliato
+// la ricerca non trova nulla, non apre il messaggio di un altro.
+const GMAIL_LINK_FALLBACK = "https://mail.google.com/mail/u/{u}/#search/rfc822msgid:{mid}/{id}";
+const GMAIL_LINK_FALLBACK_ID = "https://mail.google.com/mail/u/{u}/#all/{id}";
+function linkMail(p) {
+  const msgId = p && typeof p === "object" ? (p.msg_id || "") : String(p || "");
+  const mid = p && typeof p === "object" ? midPren(p) : "";
+  if (!msgId && !mid) return "";
+  const s = D.settings || {};
+  const u = (s.gmail_u === undefined || s.gmail_u === null || s.gmail_u === "") ? "0" : String(s.gmail_u);
+  const tpl = mid ? (s.gmail_link || GMAIL_LINK_FALLBACK) : (s.gmail_link_id || GMAIL_LINK_FALLBACK_ID);
+  return tpl.replace("{u}", encodeURIComponent(u))
+            .replace("{mid}", encodeURIComponent(mid))
+            .replace("{id}", encodeURIComponent(msgId));
 }
-// PDF della prenotazione: sta nel JSON della colonna note, nessuna colonna nuova.
-function pdfPren(p) { try { const d = JSON.parse(p.note || "null"); return (d && d.pdf) || ""; } catch (e) { return ""; } }
+// PDF e Message-Id stanno nel JSON della colonna note: nessuna colonna nuova.
+function notePren(p) { try { const d = JSON.parse((p && p.note) || "null"); return (d && typeof d === "object") ? d : null; } catch (e) { return null; } }
+function pdfPren(p) { const d = notePren(p); return (d && d.pdf) || ""; }
+function midPren(p) { const d = notePren(p); return String((d && d.mid) || "").replace(/^</, "").replace(/>$/, ""); }
 // Quale prenotazione e' agganciata a una voce di checklist.
 function prenDiVoce(voceId) {
   if (!voceId) return null;
@@ -531,7 +547,7 @@ function prenDiVoce(voceId) {
 // Una voce senza prenotazione tiene il suo "Apri" di sempre.
 function bottoniVoce(c) {
   const p = prenDiVoce(c.id), b = [];
-  if (p && p.msg_id) b.push('<a class="btn sm" href="' + esc(linkMail(p.msg_id)) + '" target="_blank" rel="noopener" title="Apri la mail">✉️</a>');
+  if (p && p.msg_id) b.push('<a class="btn sm" href="' + esc(linkMail(p)) + '" target="_blank" rel="noopener" title="Apri la mail">✉️</a>');
   const pdf = p ? pdfPren(p) : "";
   if (pdf) b.push('<a class="btn sm" href="' + esc(pdf) + '" target="_blank" rel="noopener" title="Apri il PDF (funziona offline)">📄</a>');
   if (!b.length && c.link) b.push('<a class="btn sm" href="' + esc(c.link) + '" target="_blank" rel="noopener">Apri</a>');
@@ -582,7 +598,7 @@ function vPrenotazioni() {
       ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
       <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
     ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div>
-      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p.msg_id))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">Il link del fornitore vive qui: serve per il check-in e per cambiare una prenotazione. Sulla voce di checklist ci sono invece la mail e il PDF, che reggono anche senza rete. "Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
     ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.oggetto)}</div><div class="muted">${esc(p.mittente)}</div></div><button class="btn sm" onclick="ripristinaPren('${p.id}')">Ripristina</button></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui.</div>` : ""}`;
