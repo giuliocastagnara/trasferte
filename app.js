@@ -121,7 +121,7 @@ function render() {
   $("#whoBtn").textContent = cfg.who;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
   setNet();
-  const map = { prenotazioni: vPrenotazioni, compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
+  const map = { prenotazioni: vPrenotazioni, proposte: vProposte, compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
   $("#view").innerHTML = (map[view] || vOggi)();
   const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
@@ -167,6 +167,8 @@ function vOggi() {
   }
   const nPren = (D.prenotazioni || []).filter(p => p.stato === "nuova").length;
   if (nPren) h += `<div class="card tap" onclick="go('prenotazioni')"><div class="row between"><div><b>📧 ${nPren} prenotazioni trovate nella mail</b><div class="muted">Tocca per collegarle alla checklist</div></div><span>›</span></div></div>`;
+  const nProp = proposteNuove().length;
+  if (nProp) h += `<div class="card tap" onclick="go('proposte')"><div class="row between"><div class="grow"><b>💳 ${nProp} propost${nProp === 1 ? "a" : "e"} di spesa</b><div class="muted">Ricevute trovate nella mail, da confermare una a una</div></div><span class="pill warn">${nProp}</span><span>›</span></div></div>`;
   // Promemoria scontrini: solo le MIE spese dell'anno in corso a cui manca la foto
   const annoOra = today().slice(0, 4), meseOra = today().slice(0, 7);
   const noSc = mieSpese().filter(x => !x.scontrino && String(x.data).slice(0, 4) === annoOra);
@@ -373,6 +375,7 @@ function vAltro() {
   return `<h1>Altro</h1>
     <div class="card tap" onclick="go('compensi')"><b>💶 Compensi caddie</b><div class="muted">Settimane, montepremi, 50% voli, cosa resta da pagare</div></div>
     <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${(D.prenotazioni || []).filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
+    <div class="card tap" onclick="go('proposte')"><b>💳 Proposte di spesa</b><div class="muted">${proposteNuove().length} ricevute dalla mail da confermare</div></div>
     <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
     <div class="card tap" onclick="go('documenti')"><b>🪪 Documenti</b><div class="muted">Passaporti, licenze, visti, assicurazioni</div></div>
     <div class="card tap" onclick="go('impostazioni')"><b>⚙️ Impostazioni</b><div class="muted">Categorie, checklist, report per il commercialista</div></div>
@@ -602,6 +605,117 @@ function formPren(id) {
     closeModal(); toast("Collego…");
     try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast("Collegata alla checklist"); }
     catch (e) { toast("Errore: " + e.message, 5000); }
+  });
+}
+
+// ------------------------------------------------- PROPOSTE DI SPESA (email)
+// Lo script legge dalla posta ricevute e fatture e prepara delle proposte.
+// Niente finisce in Spese finché non premi "Crea la spesa" qui sotto: chi ha
+// pagato e il tipo (personale / condivisa / ciascuno) la mail non può saperli.
+const proposteNuove = () => (D.proposte || []).filter(p => p.stato === "nuova");
+function propNote(p) { try { return JSON.parse(p.note || "null") || {}; } catch (e) { return {}; } }
+function propImporto(p) {
+  const v = Number(p.importo) || 0;
+  return (p.valuta && p.valuta !== "EUR") ? num(v) + " " + esc(p.valuta) : eur(v);
+}
+function itemProposta(p) {
+  const n = propNote(p);
+  return `<div class="item"><div class="thumb">${p.allegato ? "🧾" : "💳"}</div>
+    <div class="grow"><div class="ellipsis"><b>${esc(p.vendor || p.descrizione || p.oggetto)}</b></div>
+      <div class="dett">${fmtDY(p.data)} · ${esc(String(p.categoria || "Altro").split(" - ").pop())}${p.trasferta ? " · " + esc(p.trasferta) : ' · <span class="pill warn">trasferta?</span>'}</div>
+      <div class="muted ellipsis">${esc(p.mittente)}${p.file_url ? ` · <a href="${esc(p.file_url)}" target="_blank" rel="noopener">apri il PDF</a>` : n.pdf ? " · PDF non salvato" : ""}</div></div>
+    <div style="text-align:right"><div class="amt">${propImporto(p)}</div>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px"><button class="btn sm primary" onclick="formProposta('${p.id}')">Conferma</button><button class="btn sm" onclick="ignoraProposta('${p.id}')">Ignora</button></div></div></div>`;
+}
+function vProposte() {
+  const all = (D.proposte || []).slice().sort((a, b) => a.data < b.data ? 1 : -1);
+  const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "confermata");
+  const ignorate = all.filter(p => p.stato === "ignorata");
+  const tot = nuove.reduce((a, p) => a + (p.valuta === "EUR" || !p.valuta ? Number(p.importo) || 0 : 0), 0);
+  return `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Proposte di spesa</h1><button class="btn sm primary" onclick="scanSpese()">Scansiona</button></div>
+    <div class="muted" style="margin:8px 0 12px">Ricevute e fatture lette dalla mail, con il PDF già allegato quando c'è. <b>Nessuna diventa una spesa finché non la confermi tu</b>: chi ha pagato e personale/condivisa/ciascuno li scegli qui.</div>
+    <h2>Da confermare <span class="muted">(${nuove.length}${tot ? " · " + eur(tot) : ""})</span></h2>
+    <div class="card list">${nuove.length ? nuove.map(itemProposta).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
+    ${fatte.length ? `<h2>Confermate <span class="muted">(${fatte.length})</span></h2><div class="card list">${fatte.slice(0, 20).map(p => `<div class="item tap" onclick="${p.spesa_id ? `formSpesa('${p.spesa_id}')` : ""}"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.vendor || p.descrizione)}</div><div class="muted">${fmtDY(p.data)}${p.trasferta ? " · " + esc(p.trasferta) : ""}</div></div><div class="amt">${propImporto(p)}</div></div>`).join("")}</div>` : ""}
+    ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.slice(0, 20).map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.vendor || p.oggetto)}</div><div class="muted">${fmtDY(p.data)} · ${propImporto(p)}</div></div><button class="btn sm" onclick="ripristinaProposta('${p.id}')">Ripristina</button></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui (e il PDF messo da parte va nel cestino).</div>` : ""}`;
+}
+async function scanSpese() {
+  toast("Cerco ricevute nella mail… (può volerci un minuto)", 8000);
+  try {
+    const r = await api("spese.scan");
+    D.proposte = r.proposte; LS.set("data", D); render();
+    toast(r.nuove ? `${r.nuove} proposte${r.pdf ? ` · ${r.pdf} PDF salvati` : ""}` : "Nessuna spesa nuova trovata");
+  } catch (e) { toast("Errore: " + e.message, 5000); }
+}
+async function ignoraProposta(id) {
+  try {
+    await api("proposta.stato", { id, stato: "ignorata" });
+    const x = (D.proposte || []).find(y => y.id === id); if (x) { x.stato = "ignorata"; x.allegato = ""; x.file_url = ""; }
+    LS.set("data", D); render(); toast("Ignorata. In fondo alla pagina c'è \"Ripristina\".", 4000);
+  } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+async function ripristinaProposta(id) {
+  try {
+    await api("proposta.stato", { id, stato: "nuova" });
+    const x = (D.proposte || []).find(y => y.id === id); if (x) x.stato = "nuova";
+    LS.set("data", D); render();
+  } catch (e) { toast("Errore: " + e.message, 4000); }
+}
+// La conferma: tutto già compilato, mancano solo chi ha pagato e come si divide.
+function formProposta(id) {
+  const p = (D.proposte || []).find(x => x.id === id); if (!p) return;
+  const n = propNote(p);
+  const s = { tipo: "condivisa", pagato_da: cfg.who, n_persone: 2 };
+  const cats = D.settings.categorie || [];
+  const vals = D.settings.valute || ["EUR"];
+  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta), p.trasferta])].filter(Boolean).sort();
+  openModal(`<h2 style="margin-top:0">Conferma spesa</h2>
+    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
+      ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
+      ${p.file_url ? `<a href="${esc(p.file_url)}" target="_blank" rel="noopener">🧾 apri il PDF allegato</a>` : n.pdf ? `<div class="muted">PDF nella mail ma non salvato</div>` : `<div class="muted">Nessun allegato: la spesa resterà senza scontrino</div>`}
+      ${n.link ? ` · <a href="${esc(n.link)}" target="_blank" rel="noopener">apri la mail del fornitore</a>` : ""}</div>
+    <div class="cols3"><div class="field"><label>Importo</label><input id="qImp" inputmode="decimal" value="${esc(p.importo)}"></div>
+      <div class="field"><label>Valuta</label><select id="qVal">${[...new Set([p.valuta || "EUR", ...vals])].map(v => `<option ${v === (p.valuta || "EUR") ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
+    <div class="preview" id="qPrev"></div>
+    <div class="cols"><div class="field"><label>Data</label><input id="qData" type="date" value="${esc(p.data)}"></div>
+      <div class="field"><label>Trasferta</label><select id="qTrip">${trips.map(t => `<option ${t === p.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div></div>
+    <div class="field"><label>Categoria</label><select id="qCat">${cats.map(c => `<option ${c === p.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
+    <div class="field"><label>Descrizione</label><input id="qDesc" value="${esc(p.descrizione || p.vendor)}"></div>
+    <div class="field"><label>Tipo di spesa</label><div class="seg" id="qTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
+    <div class="field muted" id="qConto" hidden>Spesa personale: finisce solo nei libri di ${cfg.who} e l'altro non la vede.</div>
+    <div class="field"><label>Chi ha pagato</label><div class="seg" id="qChi">${PERSONE.map(x => `<button data-v="${x}" class="${s.pagato_da === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
+    <div class="field" id="qN"><label>In quante persone si divide</label><div class="seg" id="qSegN">${[2, 3, 4, 5, 6].map(x => `<button data-v="${x}" class="${s.n_persone === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
+    <div class="row" style="gap:8px"><button class="btn primary grow" id="qSave">Crea la spesa</button><button class="btn" onclick="closeModal()">Annulla</button></div>
+    <div class="muted" style="margin-top:8px">Il PDF viene rinominato con la convenzione solita e spostato nella cartella della trasferta.</div>`);
+  const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
+  seg("#qTipo", v => { s.tipo = v; $("#qConto").hidden = v !== "personale"; $("#qN").hidden = !(v === "condivisa" || v === "ciascuno"); });
+  seg("#qChi", v => s.pagato_da = v); seg("#qSegN", v => s.n_persone = +v);
+  const prev = async () => {
+    const v = $("#qVal").value, imp = parseFloat(String($("#qImp").value).replace(",", "."));
+    if (!imp || v === "EUR") return $("#qPrev").textContent = "";
+    $("#qPrev").textContent = "cambio…";
+    try { const r = await api("fx", { valuta: v, data: $("#qData").value }); $("#qPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#qData").value)})`; }
+    catch (e) { $("#qPrev").textContent = "cambio non disponibile (lo calcola il server)"; }
+  };
+  ["#qImp", "#qVal", "#qData"].forEach(x => $(x).addEventListener("change", prev)); prev();
+  $("#qSave").addEventListener("click", async () => {
+    const importo = parseFloat(String($("#qImp").value).replace(",", "."));
+    if (!importo) return toast("Inserisci l'importo");
+    const trasferta = $("#qTrip").value; if (!trasferta) return toast("Scegli la trasferta");
+    const payload = {
+      id: p.id, importo: importo, valuta: $("#qVal").value, data: $("#qData").value, trasferta: trasferta,
+      categoria: $("#qCat").value, descrizione: $("#qDesc").value.trim(),
+      tipo: s.tipo, pagato_da: s.pagato_da, n_persone: s.n_persone, conto: cfg.who,
+    };
+    closeModal(); toast("Creo la spesa…");
+    try {
+      const r = await api("proposta.conferma", payload);
+      const i = (D.proposte || []).findIndex(x => x.id === p.id); if (i >= 0) D.proposte[i] = r.proposta;
+      const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
+      LS.set("data", D); render();
+      toast("Spesa creata" + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4000);
+    } catch (e) { toast("Errore: " + e.message, 5000); }
   });
 }
 
