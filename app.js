@@ -614,6 +614,15 @@ function formPren(id) {
 // pagato e il tipo (personale / condivisa / ciascuno) la mail non può saperli.
 const proposteNuove = () => (D.proposte || []).filter(p => p.stato === "nuova");
 function propNote(p) { try { return JSON.parse(p.note || "null") || {}; } catch (e) { return {}; } }
+// Gli avvisi della carta non diventano mai proposte, ma confermano (o correggono)
+// l'importo letto dalla ricevuta del fornitore.
+function rigaCarta(p) {
+  const c = (propNote(p) || {}).carta;
+  if (!c) return "";
+  if (c.ok) return `<div class="dett">✓ importo confermato dall'addebito sulla carta</div>`;
+  if (c.corretto) return `<div class="dett"><b>⟳ importo preso dalla carta</b> (la mail diceva ${num(c.prima)})</div>`;
+  return "";
+}
 function propImporto(p) {
   const v = Number(p.importo) || 0;
   return (p.valuta && p.valuta !== "EUR") ? num(v) + " " + esc(p.valuta) : eur(v);
@@ -623,6 +632,7 @@ function itemProposta(p) {
   return `<div class="item"><div class="thumb">${p.allegato ? "🧾" : "💳"}</div>
     <div class="grow"><div class="ellipsis"><b>${esc(p.vendor || p.descrizione || p.oggetto)}</b></div>
       <div class="dett">${fmtDY(p.data)} · ${esc(String(p.categoria || "Altro").split(" - ").pop())}${p.trasferta ? " · " + esc(p.trasferta) : ' · <span class="pill warn">trasferta?</span>'}</div>
+      ${rigaCarta(p)}
       <div class="muted ellipsis">${esc(p.mittente)}${p.file_url ? ` · <a href="${esc(p.file_url)}" target="_blank" rel="noopener">apri il PDF</a>` : n.pdf ? " · PDF non salvato" : ""}</div></div>
     <div style="text-align:right"><div class="amt">${propImporto(p)}</div>
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px"><button class="btn sm primary" onclick="formProposta('${p.id}')">Conferma</button><button class="btn sm" onclick="ignoraProposta('${p.id}')">Ignora</button></div></div></div>`;
@@ -673,6 +683,7 @@ function formProposta(id) {
   openModal(`<h2 style="margin-top:0">Conferma spesa</h2>
     <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
       ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
+      ${rigaCarta(p)}
       ${p.file_url ? `<a href="${esc(p.file_url)}" target="_blank" rel="noopener">🧾 apri il PDF allegato</a>` : n.pdf ? `<div class="muted">PDF nella mail ma non salvato</div>` : `<div class="muted">Nessun allegato: la spesa resterà senza scontrino</div>`}
       ${n.link ? ` · <a href="${esc(n.link)}" target="_blank" rel="noopener">apri la mail del fornitore</a>` : ""}</div>
     <div class="cols3"><div class="field"><label>Importo</label><input id="qImp" inputmode="decimal" value="${esc(p.importo)}"></div>
