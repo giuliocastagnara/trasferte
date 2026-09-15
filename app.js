@@ -98,6 +98,40 @@ const visibleSpese = () => (D.spese || []).filter(s => !(s.tipo === "personale" 
 const mioImporto = s => Math.round((cfg.who === "Giulio" ? (+s.libri_giulio || 0) : (+s.importo_eur || 0)) * 100) / 100;
 const saldoTot = () => Math.round((D.spese || []).reduce((a, s) => a + (Number(s.saldo) || 0), 0) * 100) / 100;
 function saldoLabel(v) { if (Math.abs(v) < 0.005) return "Siete pari"; return v > 0 ? `Alessandra deve a Giulio ${eur(v)}` : `Giulio deve ad Alessandra ${eur(-v)}`; }
+
+// ---- "Che cosa fa questa spesa": il riquadro che spiega, con i numeri veri, dove
+// finisce l'importo e che debito nasce. condivisa / ciascuno / personale si
+// dimenticano in fretta, e l'errore si scopre solo mesi dopo guardando i libri.
+const TIPO_NOTA = {
+  condivisa:   "Spesa di tutti e due pagata da uno solo: Alessandra la scarica per intero, a Giulio resta la sua quota, e nasce un debito.",
+  ciascuno:    "Spesa di tutti e due, ma ognuno ha gia' pagato la sua parte: nessun debito fra voi.",
+  personale:   "Spesa di una persona sola: entra solo nei suoi libri e l'altro non la vede nemmeno.",
+  caddie:      "Compenso caddie: va sui libri di Alessandra e diventa un credito di Giulio.",
+  regolamento: "Pagamento vero e proprio: sposta solo il saldo, non entra nei libri di nessuno.",
+};
+// Il saldo detto dal punto di vista di chi sta guardando (piu' chiaro di "+/-").
+function saldoIo(v) {
+  if (Math.abs(v) < 0.005) return "nessun debito";
+  const creditore = v > 0 ? "Giulio" : "Alessandra";
+  const debitore  = v > 0 ? "Alessandra" : "Giulio";
+  const q = eur(Math.abs(v));
+  const a = /^[AEIOU]/i.test(creditore) ? "ad" : "a";   // eufonia: ad Alessandra, a Giulio
+  return cfg.who === creditore ? `${debitore} ti deve ${q}` : `devi ${a} ${creditore} ${q}`;
+}
+// eurImp = importo GIA' convertito in euro (0 se non si sa ancora il cambio).
+function boxLibri(s, eurImp) {
+  const noto = (Number(eurImp) || 0) > 0;
+  const c = computeSpesa({ importo_eur: Number(eurImp) || 0, n_persone: s.n_persone, tipo: s.tipo,
+                           pagato_da: s.pagato_da, conto: s.tipo === "personale" ? (s.conto || cfg.who) : "" });
+  const riga = (lab, val) => `<div class="brow"><span>${lab}</span><b>${noto ? eur(val) : "\u2014"}</b></div>`;
+  const mio = p => p + (cfg.who === p ? " (tu)" : "");
+  return `<div class="bhead">Che cosa fa questa spesa</div>
+    ${riga("Libri " + mio("Alessandra"), c.libri_ale)}
+    ${riga("Libri " + mio("Giulio"), c.libri_giulio)}
+    <div class="brow"><span>Saldo</span><b>${noto ? esc(saldoIo(c.saldo)) : "\u2014"}</b></div>
+    <p class="bnote">${esc(TIPO_NOTA[s.tipo] || "")}</p>
+    ${noto ? "" : `<p class="bnote">Scrivi l'importo per vedere le cifre.</p>`}`;
+}
 function currentTrip(d = today()) {
   const t = (D.trasferte || []).filter(t => t.inizio && t.fine && t.inizio <= d && d <= t.fine);
   return t.sort((a, b) => a.inizio < b.inizio ? 1 : -1)[0] || null;
@@ -743,22 +777,27 @@ function formProposta(id) {
     <div class="field"><label>Categoria</label><select id="qCat">${cats.map(c => `<option ${c === p.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
     <div class="field"><label>Descrizione</label><input id="qDesc" value="${esc(p.descrizione || p.vendor)}"></div>
     <div class="field"><label>Tipo di spesa</label><div class="seg" id="qTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
-    <div class="field muted" id="qConto" hidden>Spesa personale: finisce solo nei libri di ${cfg.who} e l'altro non la vede.</div>
+
     <div class="field"><label>Chi ha pagato</label><div class="seg" id="qChi">${PERSONE.map(x => `<button data-v="${x}" class="${s.pagato_da === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
     <div class="field" id="qN"><label>In quante persone si divide</label><div class="seg" id="qSegN">${[2, 3, 4, 5, 6].map(x => `<button data-v="${x}" class="${s.n_persone === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
+    <div class="books" id="qBooks"></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="qSave">Crea la spesa</button><button class="btn" onclick="closeModal()">Annulla</button></div>
     <div class="muted" style="margin-top:8px">Il PDF viene rinominato con la convenzione solita e spostato nella cartella della trasferta.</div>`);
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
-  seg("#qTipo", v => { s.tipo = v; $("#qConto").hidden = v !== "personale"; $("#qN").hidden = !(v === "condivisa" || v === "ciascuno"); });
-  seg("#qChi", v => s.pagato_da = v); seg("#qSegN", v => s.n_persone = +v);
+  const qEurOra = () => { const i = parseFloat(String($("#qImp").value).replace(",", ".")) || 0; return $("#qVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
+  const qUpdBooks = () => { const b = $("#qBooks"); if (b) b.innerHTML = boxLibri(s, qEurOra()); };
+  seg("#qTipo", v => { s.tipo = v; $("#qN").hidden = !(v === "condivisa" || v === "ciascuno"); qUpdBooks(); });
+  seg("#qChi", v => { s.pagato_da = v; qUpdBooks(); }); seg("#qSegN", v => { s.n_persone = +v; qUpdBooks(); });
+  ["#qImp", "#qVal"].forEach(x => $(x).addEventListener("input", qUpdBooks));
   const prev = async () => {
     const v = $("#qVal").value, imp = parseFloat(String($("#qImp").value).replace(",", "."));
     if (!imp || v === "EUR") return $("#qPrev").textContent = "";
     $("#qPrev").textContent = "cambio…";
-    try { const r = await api("fx", { valuta: v, data: $("#qData").value }); $("#qPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#qData").value)})`; }
+    try { const r = await api("fx", { valuta: v, data: $("#qData").value }); s.cambio = r.cambio; $("#qPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#qData").value)})`; }
     catch (e) { $("#qPrev").textContent = "cambio non disponibile (lo calcola il server)"; }
   };
-  ["#qImp", "#qVal", "#qData"].forEach(x => $(x).addEventListener("change", prev)); prev();
+  ["#qImp", "#qVal", "#qData"].forEach(x => $(x).addEventListener("change", () => prev().then(qUpdBooks)));
+  prev().then(qUpdBooks); qUpdBooks();
   $("#qSave").addEventListener("click", async () => {
     const importo = parseFloat(String($("#qImp").value).replace(",", "."));
     if (!importo) return toast("Inserisci l'importo");
@@ -847,7 +886,7 @@ function formSpesa(id, tripName, forceTipo) {
   openModal(`
     <h2 style="margin-top:0">${ex ? "Modifica" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}</h2>
     ${isMov ? "" : `<div class="field"><div class="seg" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
-    <div class="field muted" id="fConto" ${s.tipo !== "personale" ? "hidden" : ""}>Spesa personale: finisce solo nei libri di ${cfg.who} e l'altro non la vede.</div>`}
+`}
     <div class="cols3"><div class="field"><label>Importo</label><input id="fImp" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"></div>
       <div class="field"><label>Valuta</label><select id="fVal">${[...new Set([s.valuta, ...vals])].map(v => `<option ${v === s.valuta ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
     <div class="preview" id="fPrev">${ex && s.valuta !== "EUR" ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
@@ -859,13 +898,19 @@ function formSpesa(id, tripName, forceTipo) {
     <div class="field" id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}><label>In quante persone si divide</label><div class="seg" id="segN">${[2, 3, 4, 5, 6].map(n => `<button data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">${n}</button>`).join("")}</div></div>
     ${isMov ? "" : `<div class="field"><label>Scontrino ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label><input id="fFile" type="file" accept="image/*,application/pdf"><div class="muted" id="fFileInfo"></div></div>`}
     <div class="field"><label>Note</label><input id="fNote" value="${esc(s.note || "")}"></div>
+    <div class="books" id="fBooks"></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">Salva</button>${ex ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
-  seg("#segTipo", v => { s.tipo = v; $("#fConto").hidden = v !== "personale"; $("#fN").hidden = !(v === "condivisa" || v === "ciascuno"); });
-  seg("#segChi", v => s.pagato_da = v); seg("#segN", v => s.n_persone = +v);
+  // il riquadro "che cosa fa questa spesa" si riaggiorna a ogni scelta
+  const eurOra = () => { const i = parseFloat(String($("#fImp").value).replace(",", ".")) || 0; return $("#fVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
+  const updBooks = () => { const b = $("#fBooks"); if (b) b.innerHTML = boxLibri(s, eurOra()); };
+  seg("#segTipo", v => { s.tipo = v; $("#fN").hidden = !(v === "condivisa" || v === "ciascuno"); updBooks(); });
+  seg("#segChi", v => { s.pagato_da = v; updBooks(); }); seg("#segN", v => { s.n_persone = +v; updBooks(); });
+  ["#fImp", "#fVal"].forEach(x => $(x).addEventListener("input", updBooks));
   $("#fTrip").addEventListener("change", e => { if (e.target.value === "__new") { const n = prompt("Nome nuova trasferta"); if (n) { const o = document.createElement("option"); o.textContent = n; e.target.insertBefore(o, e.target.firstChild); e.target.value = n; } else e.target.value = s.trasferta; } });
   const prev = async () => { const v = $("#fVal").value, imp = parseFloat(String($("#fImp").value).replace(",", ".")); if (!imp) return $("#fPrev").textContent = ""; if (v === "EUR") return $("#fPrev").textContent = ""; $("#fPrev").textContent = "cambio…"; try { const r = await api("fx", { valuta: v, data: $("#fData").value }); s.cambio = r.cambio; $("#fPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#fData").value)})`; } catch (e) { $("#fPrev").textContent = "cambio non disponibile (verrà calcolato al salvataggio)"; } };
-  ["#fImp", "#fVal", "#fData"].forEach(x => $(x).addEventListener("change", prev));
+  ["#fImp", "#fVal", "#fData"].forEach(x => $(x).addEventListener("change", () => prev().then(updBooks)));
+  updBooks();
   const fileIn = $("#fFile"); if (fileIn) fileIn.addEventListener("change", async () => { const f = fileIn.files[0]; if (!f) return; $("#fFileInfo").textContent = "Preparo la foto…"; pendingFile = await prepFile(f); $("#fFileInfo").textContent = `${pendingFile.name} · ${Math.round(pendingFile.base64.length * 0.75 / 1024)} KB`; });
   $("#fSave").addEventListener("click", async () => {
     s.importo = parseFloat(String($("#fImp").value).replace(",", ".")); if (!s.importo) return toast("Inserisci l'importo");
