@@ -570,6 +570,46 @@ function linkMail(p) {
 function notePren(p) { try { const d = JSON.parse((p && p.note) || "null"); return (d && typeof d === "object") ? d : null; } catch (e) { return null; } }
 function pdfPren(p) { const d = notePren(p); return (d && d.pdf) || ""; }
 function midPren(p) { const d = notePren(p); return String((d && d.mid) || "").replace(/^</, "").replace(/>$/, ""); }
+// ---- T8: dalla prenotazione alla spesa, senza cambiare pagina ----
+// La riga di Prenotazioni e quella di Proposte nate dalla STESSA mail si puntano
+// a vicenda: prop_id di qua, pren_id di la', scritti dal backend. Qui serve solo
+// per ritrovare la proposta gia' pronta e riaprirla.
+// Il modulo che si apre e' lo STESSO di "Conferma" nella pagina Proposte: tipo
+// (personale/condivisa/ciascuno), chi ha pagato, importo e dettagli si scelgono
+// li' come sempre, e niente entra in Spese finche' non premi "Crea la spesa".
+// Quella regola non si tocca: questo bottone rende la proposta RAGGIUNGIBILE,
+// non automatica.
+function propDiPren(p) {
+  if (!p) return null;
+  const props = D.proposte || [];
+  const id = (notePren(p) || {}).prop_id;
+  // prima l'aggancio esplicito; poi il messaggio, perche' le prenotazioni
+  // scritte prima di T8 non hanno prop_id ma hanno lo stesso msg_id
+  return (id && props.find(x => x.id === id)) ||
+         (p.msg_id && props.find(x => x.msg_id === p.msg_id)) || null;
+}
+// Il bottone della riga. Tre stati: c'e' una spesa da registrare, c'e' gia' ed
+// e' registrata (si apre per controllarla), oppure quella mail non ha prodotto
+// nessuna proposta e allora non si mostra niente.
+function btnSpesaPren(p) {
+  const q = propDiPren(p);
+  if (!q) return "";
+  if (q.stato === "confermata") {
+    return q.spesa_id
+      ? `<button class="btn sm" onclick="formSpesa('${q.spesa_id}')" title="Spesa gia' registrata: apri per controllarla">\u2713 spesa</button>`
+      : `<button class="btn sm" disabled>\u2713 spesa</button>`;
+  }
+  return `<button class="btn sm primary" onclick="spesaDaPren('${p.id}')" title="Apri la proposta di spesa letta da questa stessa mail">\ud83d\udcb3 Spesa</button>`;
+}
+// Apre la proposta passando la trasferta della prenotazione: se la proposta non
+// ne aveva una (o ne aveva un'altra), quella giusta e' quella appena collegata.
+function spesaDaPren(prenId) {
+  const p = (D.prenotazioni || []).find(x => x.id === prenId);
+  const q = propDiPren(p);
+  if (!q) return toast("Da questa mail non e' nata nessuna proposta di spesa", 4000);
+  const t = (D.trasferte || []).find(x => x.id === (p || {}).trasferta_id);
+  formProposta(q.id, { trasferta: (t && t.nome) || q.trasferta || "" });
+}
 // Quale prenotazione e' agganciata a una voce di checklist.
 function prenDiVoce(voceId) {
   if (!voceId) return null;
@@ -630,10 +670,11 @@ function vPrenotazioni() {
     <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
     <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => { const righe = prenRighe(p); return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
       ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
-      <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
+      <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button>${btnSpesaPren(p)}<button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
     ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div>
-      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
+      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><div style="display:flex;flex-direction:column;gap:4px">${btnSpesaPren(p)}<button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">Il link del fornitore vive qui: serve per il check-in e per cambiare una prenotazione. Sulla voce di checklist ci sono invece la mail e il PDF, che reggono anche senza rete. "Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
+    <div class="muted" style="margin-top:10px">\ud83d\udcb3 <b>Spesa</b> compare quando dalla stessa mail è nata anche una proposta di spesa: apre il solito modulo di conferma, dove scegli personale/condivisa/ciascuno e chi ha pagato. Come sempre, in Spese non entra niente finché non premi "Crea la spesa".</div>
     ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.oggetto)}</div><div class="muted">${esc(p.mittente)}</div></div><button class="btn sm" onclick="ripristinaPren('${p.id}')">Ripristina</button></div>`).join("")}</div>
     <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui.</div>` : ""}`;
 }
@@ -686,9 +727,20 @@ function formPren(id) {
     const trasferta_id = $("#pTrip").value, voce_id = $("#pVoce").value;
     closeModal(); toast("Collego…");
     toast("Collego e salvo il PDF in Drive…", 15000);
-    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); toast(pdfPren(r.prenotazione) ? "Collegata: sulla voce trovi ✉️ mail e 📄 PDF" : "Collegata. Il PDF non è riuscito, ma la mail c'è", 5000); }
+    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); const conSpesa = offriSpesaDopoCollega(p.id); toast((pdfPren(r.prenotazione) ? "Collegata: sulla voce trovi ✉️ mail e 📄 PDF" : "Collegata. Il PDF non è riuscito, ma la mail c'è") + (conSpesa ? " · c'è anche la spesa da registrare" : ""), 5000); }
     catch (e) { toast("Errore: " + e.message, 5000); }
   });
+}
+// Il "colpo solo" del ticket T8: appena la prenotazione è collegata, se dalla
+// stessa mail era nata anche una proposta di spesa il modulo si apre da sé, con
+// la trasferta già quella giusta. Non salva niente: è il solito modulo, e si
+// chiude con Annulla se la spesa la vuoi registrare più tardi.
+function offriSpesaDopoCollega(prenId) {
+  const p = (D.prenotazioni || []).find(x => x.id === prenId);
+  const q = propDiPren(p);
+  if (!q || q.stato !== "nuova") return false;
+  setTimeout(() => spesaDaPren(prenId), 900);   // dopo il toast, non sopra
+  return true;
 }
 
 // ------------------------------------------------- PROPOSTE DI SPESA (email)
@@ -756,13 +808,16 @@ async function ripristinaProposta(id) {
   } catch (e) { toast("Errore: " + e.message, 4000); }
 }
 // La conferma: tutto già compilato, mancano solo chi ha pagato e come si divide.
-function formProposta(id) {
+// `pre` (facoltativo) preseleziona dei campi: lo usa il bottone della
+// prenotazione per proporre la trasferta a cui la prenotazione e' collegata.
+function formProposta(id, pre) {
   const p = (D.proposte || []).find(x => x.id === id); if (!p) return;
   const n = propNote(p);
+  const trip0 = (pre && pre.trasferta) || p.trasferta;
   const s = { tipo: "condivisa", pagato_da: cfg.who, n_persone: 2 };
   const cats = D.settings.categorie || [];
   const vals = D.settings.valute || ["EUR"];
-  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta), p.trasferta])].filter(Boolean).sort();
+  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta), p.trasferta, trip0])].filter(Boolean).sort();
   openModal(`<h2 style="margin-top:0">Conferma spesa</h2>
     <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
       ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
@@ -773,7 +828,7 @@ function formProposta(id) {
       <div class="field"><label>Valuta</label><select id="qVal">${[...new Set([p.valuta || "EUR", ...vals])].map(v => `<option ${v === (p.valuta || "EUR") ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
     <div class="preview" id="qPrev"></div>
     <div class="cols"><div class="field"><label>Data</label><input id="qData" type="date" value="${esc(p.data)}"></div>
-      <div class="field"><label>Trasferta</label><select id="qTrip">${trips.map(t => `<option ${t === p.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div></div>
+      <div class="field"><label>Trasferta</label><select id="qTrip">${trips.map(t => `<option ${t === trip0 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div></div>
     <div class="field"><label>Categoria</label><select id="qCat">${cats.map(c => `<option ${c === p.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
     <div class="field"><label>Descrizione</label><input id="qDesc" value="${esc(p.descrizione || p.vendor)}"></div>
     <div class="field"><label>Tipo di spesa</label><div class="seg" id="qTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>

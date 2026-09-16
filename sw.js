@@ -1,6 +1,6 @@
 // Service worker: cache dell'app per l'uso offline (i dati stanno in localStorage)
 // Bump CACHE e i ?v= in index.html insieme, a ogni modifica di app.js/style.css.
-const CACHE = "trasferte-v22";
+const CACHE = "trasferte-v23";
 const ASSETS = ["./", "./index.html", "./style.css?v=22", "./app.js?v=22", "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-180.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
