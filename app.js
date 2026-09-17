@@ -109,6 +109,66 @@ const saldoTrasferta = nome => Math.round((D.spese || []).filter(s => s.trasfert
 const daPagare = c => Math.round(((Number(c.totale) || 0) + saldoTrasferta(c.trasferta)) * 100) / 100;
 function saldoLabel(v) { if (Math.abs(v) < 0.005) return "Siete pari"; return v > 0 ? `Alessandra deve a Giulio ${eur(v)}` : `Giulio deve ad Alessandra ${eur(-v)}`; }
 
+// ---- T7: possibile doppione al salvataggio.
+// Copia speculare di dupDi_ in Codice.js (stesse soglie, stesse eccezioni): se cambia
+// una regola qui va cambiata anche di la'. Si AVVISA, non si rifiuta: al secondo tocco
+// su "Salva comunque" la spesa passa. Il controllo e' locale: boot gia' manda tutte le
+// spese, il server non serve. Le personali dell'altro non arrivano, quindi la coppia
+// "una riga sua, una mia" qui non si vede nemmeno; l'eccezione resta per simmetria.
+const DUP_TOLL_EUR = 0.5, DUP_TOLL_PERC = 0.01, DUP_GIORNI = 3;
+const DUP_STOP = /^(del|della|delle|dei|degli|con|per|and|the|una|uno|for|from|di|da|la|le|il|lo|gli|un|al|alla|nel|sul)$/;
+const dupVicini = (a, b) => Math.abs(a - b) <= Math.max(DUP_TOLL_EUR, DUP_TOLL_PERC * Math.max(Math.abs(a), Math.abs(b)));
+const dupNorm = s => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+// "Sushi Las Vegas" ~ "Sushi las vegas", "Hotel Sudafrica" ~ "Hotel Johannesburg";
+// numeri diversi ("Toll 2"/"Toll 3", "Pranzo 18Feb"/"Pranzo 19Feb") = voci distinte
+function dupSimili(d1, d2) {
+  const n1 = dupNorm(d1), n2 = dupNorm(d2);
+  if (!n1 || !n2) return false;
+  if (n1 === n2) return true;
+  const num = s => (s.match(/\d+/g) || []).join(",");
+  if (num(n1) !== num(n2)) return false;
+  const parole = s => s.split(" ").filter(t => t.length >= 3 && !DUP_STOP.test(t) && !/^\d+$/.test(t));
+  const p2 = parole(n2);
+  return parole(n1).some(t => p2.indexOf(t) >= 0);
+}
+function dupGiorni(d1, d2) {
+  const a = String(d1 || "").slice(0, 10), b = String(d2 || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b)) return NaN;
+  return Math.abs(Math.round((new Date(a + "T00:00:00") - new Date(b + "T00:00:00")) / 864e5));
+}
+// Restituisce [{spesa, gravita, perche}] con le spese di `pool` che somigliano a `s`.
+// Fuori: i compensi caddie (li controlla la pagina Compensi) e, per i pagamenti, tutto
+// cio' che non e' un altro pagamento.
+function dupDi(s, pool) {
+  const out = [];
+  if (!s || s.tipo === "caddie") return out;
+  const eurS = Number(s.importo_eur) || 0, impS = Number(s.importo) || 0;
+  pool.forEach(o => {
+    if (!o || o === s || (s.id && o.id === s.id) || o.tipo === "caddie") return;
+    if (String(o.trasferta) !== String(s.trasferta)) return;
+    if ((s.tipo === "regolamento") !== (o.tipo === "regolamento")) return;
+    const stessaValuta = String(o.valuta || "EUR") === String(s.valuta || "EUR");
+    const vicino = (stessaValuta && dupVicini(impS, Number(o.importo) || 0)) || dupVicini(eurS, Number(o.importo_eur) || 0);
+    if (!vicino) return;
+    const g = dupGiorni(s.data, o.data);
+    if (isNaN(g) || g > DUP_GIORNI) return;
+    let esito = null;
+    if (g === 0) esito = { spesa: o, gravita: "alta", perche: "stesso giorno, stesso importo" };
+    else if (String(o.categoria) === String(s.categoria) && (Math.abs(eurS - (Number(o.importo_eur) || 0)) < 0.005 || dupSimili(s.descrizione, o.descrizione)))
+      esito = { spesa: o, gravita: "bassa", perche: g + (g === 1 ? " giorno" : " giorni") + " di distanza, stessa categoria" };
+    if (!esito) return;
+    if (s.tipo === "personale" && o.tipo === "personale" && String(s.conto) !== String(o.conto)) return; // ognuno la sua meta' del pasto
+    out.push(esito);
+  });
+  return out;
+}
+function avvisoDoppioni(dup) {
+  const certi = dup.some(d => d.gravita === "alta");
+  return `<div class="card" style="border-color:var(--warn);background:#fff8e6;margin:0 0 12px"><b>${certi ? "⚠️ Sembra già registrata" : "🔎 Ce n'è una simile"}</b>
+    <div class="muted" style="margin:4px 0 6px">${dup.length === 1 ? "C'è già una spesa" : "Ci sono già " + dup.length + " spese"} su questa trasferta con lo stesso importo. Se è la stessa, annulla; se no, salva pure.</div>
+    ${dup.map(d => `<div class="row between" style="padding:6px 0;border-top:1px solid var(--line)"><div class="grow"><div class="ellipsis"><b>${esc(d.spesa.descrizione || d.spesa.categoria)}</b></div><div class="muted">${fmtDY(d.spesa.data)} · ${TIPI[d.spesa.tipo] || esc(d.spesa.tipo)} · ha pagato ${esc(d.spesa.pagato_da)} · ${esc(d.perche)}</div></div><div class="amt">${eur(d.spesa.importo_eur)}</div></div>`).join("")}</div>`;
+}
+
 // ---- "Che cosa fa questa spesa": il riquadro che spiega, con i numeri veri, dove
 // finisce l'importo e che debito nasce. condivisa / ciascuno / personale si
 // dimenticano in fretta, e l'errore si scopre solo mesi dopo guardando i libri.
@@ -165,7 +225,7 @@ function render() {
   $("#whoBtn").textContent = cfg.who;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === view));
   setNet();
-  const map = { prenotazioni: vPrenotazioni, proposte: vProposte, compensi: vCompensi, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
+  const map = { prenotazioni: vPrenotazioni, proposte: vProposte, compensi: vCompensi, audit: vAudit, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
   $("#view").innerHTML = (map[view] || vOggi)();
   const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
@@ -422,6 +482,7 @@ function vAltro() {
     <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${(D.prenotazioni || []).filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
     <div class="card tap" onclick="go('proposte')"><b>💳 Proposte di spesa</b><div class="muted">${proposteNuove().length} ricevute dalla mail da confermare</div></div>
     <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
+    <div class="card tap" onclick="go('audit')"><b>🔎 Controllo dati</b><div class="muted">${auditRes ? `${(auditRes.trovati || []).length} segnalazioni al controllo del ${fmtDY(auditRes.quando)}` : "Celle rovinate, conti che non tornano, doppioni"}</div></div>
     <div class="card tap" onclick="go('documenti')"><b>🪪 Documenti</b><div class="muted">Passaporti, licenze, visti, assicurazioni</div></div>
     <div class="card tap" onclick="go('impostazioni')"><b>⚙️ Impostazioni</b><div class="muted">Categorie, checklist, report per il commercialista</div></div>
     <div class="card tap" onclick="reload()"><b>🔄 Ricarica dati</b><div class="muted">${queue.length ? queue.length + " modifiche in attesa di invio" : "Tutto sincronizzato"}</div></div>`;
@@ -545,6 +606,43 @@ async function makeReport() {
   toast("Genero il report…", 6000);
   try { const r = await api("report", { anno: $("#repAnno").value, persona: $("#repChi").value }); openModal(`<h2>Report pronto</h2><p>${r.righe} righe · totale ${eur(r.totale)}</p><a class="btn primary block" href="${esc(r.url)}" target="_blank" rel="noopener">Apri il foglio</a>`); }
   catch (e) { toast("Errore: " + e.message, 4000); }
+}
+
+// ---- CONTROLLO DATI (T7)
+// Chiede al server l'azione `audit` (sola lettura) e mostra le segnalazioni per gravita'.
+// Una cella avvelenata dal formato la app NON puo' ripararla (route_ scrive valori, mai
+// formati): il rimedio e' scritto nella segnalazione, e va fatto nel foglio.
+let auditRes = LS.get("audit", null);
+const GRAV = { alta: ["bad", "Da sistemare"], media: ["warn", "Da guardare"], bassa: ["grey", "Note"] };
+function vAudit() {
+  const r = auditRes;
+  let h = `<div class="row"><button class="btn sm" onclick="go('altro')">‹</button><h1 class="grow" style="margin:0">Controllo dati</h1><button class="btn sm primary" onclick="runAudit()">${r ? "Ripeti" : "Esegui"}</button></div>
+    <div class="muted small" style="margin:8px 0 12px">Legge tutto il Team DB e segnala celle rovinate dal formato, conti che non tornano, doppioni e righe fuori regola. Non modifica niente.</div>`;
+  if (!r) return h + `<div class="empty">Nessun controllo ancora eseguito</div>`;
+  const t = r.totali || {}, tr = r.trovati || [], so = r.soppressi || [], righe = r.righe || {};
+  const visibile = id => (D.spese || []).some(s => s.id === id);
+  h += `<div class="card"><div class="muted">Controllo del ${fmtDY(r.quando)} alle ${String(r.quando).slice(11, 16)} · ${righe.Spese || 0} spese · ${righe.Compensi || 0} compensi</div>
+    <div class="row between" style="margin-top:8px"><span class="small">Saldo</span><b class="small">${saldoLabel(t.saldo)}</b></div>
+    <div class="row between"><span class="small">Libri Alessandra · Giulio</span><b class="small">${eur(t.libri_ale)} · ${eur(t.libri_giulio)}</b></div>
+    <div class="row between"><span class="small">Caddie in Spese = Compensi</span><b class="small" style="color:${r.invariante_ok ? "var(--good)" : "var(--bad)"}">${eur(t.caddie_spese)} ${r.invariante_ok ? "✓" : "≠ " + eur(t.compensi_totale)}</b></div></div>`;
+  if (!tr.length) h += `<div class="card" style="border-color:var(--good)"><b>✓ Nessuna segnalazione</b><div class="muted">Tutto torna con le regole.</div></div>`;
+  ["alta", "media", "bassa"].forEach(g => {
+    const L = tr.filter(x => x.gravita === g); if (!L.length) return;
+    h += `<h2>${GRAV[g][1]} <span class="muted">(${L.length})</span></h2><div class="card list">` + L.map(x => {
+      const id = (x.spese || []).find(visibile);
+      return `<div class="item${id ? " tap" : ""}" ${id ? `onclick="formSpesa('${id}')"` : ""}><div class="grow"><div><span class="pill ${GRAV[g][0]}">${esc(x.dove)}</span></div><div class="dett" style="margin-top:3px">${esc(x.testo)}</div>${x.rimedio ? `<div class="muted" style="margin-top:3px">→ ${esc(x.rimedio)}</div>` : ""}</div></div>`;
+    }).join("") + `</div>`;
+  });
+  if (so.length) h += `<h2>Ignorati apposta <span class="muted">(${so.length})</span></h2><div class="card">${so.map(x => `<div class="dett" style="padding:4px 0;border-bottom:1px solid var(--line)"><span class="muted">${esc(x.dove)}</span> · ${esc(x.testo)}</div>`).join("")}</div>`;
+  return h;
+}
+async function runAudit() {
+  toast("Controllo in corso… (qualche secondo)", 8000);
+  try {
+    auditRes = await api("audit"); LS.set("audit", auditRes); view = "audit"; render();
+    const c = auditRes.conteggio || {};
+    toast(auditRes.trovati.length ? `${auditRes.trovati.length} segnalazioni: ${c.alta || 0} da sistemare, ${c.media || 0} da guardare, ${c.bassa || 0} note` : "Tutto in ordine", 5000);
+  } catch (e) { toast("Errore: " + e.message, 5000); }
 }
 
 // ---------------------------------------------------------------- PRENOTAZIONI DA EMAIL
@@ -846,6 +944,7 @@ function formProposta(id, pre) {
     <div class="field"><label>Chi ha pagato</label><div class="seg" id="qChi">${PERSONE.map(x => `<button data-v="${x}" class="${s.pagato_da === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
     <div class="field" id="qN"><label>In quante persone si divide</label><div class="seg" id="qSegN">${[2, 3, 4, 5, 6].map(x => `<button data-v="${x}" class="${s.n_persone === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
     <div class="books" id="qBooks"></div>
+    <div id="qDup"></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="qSave">Crea la spesa</button><button class="btn" onclick="closeModal()">Annulla</button></div>
     <div class="muted" style="margin-top:8px">Il PDF viene rinominato con la convenzione solita e spostato nella cartella della trasferta.</div>`);
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
@@ -863,10 +962,15 @@ function formProposta(id, pre) {
   };
   ["#qImp", "#qVal", "#qData"].forEach(x => $(x).addEventListener("change", () => prev().then(qUpdBooks)));
   prev().then(qUpdBooks); qUpdBooks();
+  let dupVisto = ""; // T7, come in formSpesa
   $("#qSave").addEventListener("click", async () => {
     const importo = parseFloat(String($("#qImp").value).replace(",", "."));
     if (!importo) return toast("Inserisci l'importo");
     const trasferta = $("#qTrip").value; if (!trasferta) return toast("Scegli la trasferta");
+    // T7: la ricevuta dalla mail puo' essere una spesa gia' scritta a mano
+    const bozza = { data: $("#qData").value, trasferta, importo, valuta: $("#qVal").value, importo_eur: qEurOra(), tipo: s.tipo, conto: cfg.who, categoria: $("#qCat").value, descrizione: $("#qDesc").value.trim() };
+    const dup = dupDi(bozza, D.spese || []), chiave = dup.map(d => d.spesa.id).join(",") + "|" + importo + "|" + bozza.data + "|" + trasferta;
+    if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#qDup").innerHTML = avvisoDoppioni(dup); $("#qSave").textContent = "Crea comunque"; $("#qDup").scrollIntoView({ block: "nearest" }); return; }
     const payload = {
       id: p.id, importo: importo, valuta: $("#qVal").value, data: $("#qData").value, trasferta: trasferta,
       categoria: $("#qCat").value, descrizione: $("#qDesc").value.trim(),
@@ -982,6 +1086,7 @@ function formSpesa(id, tripName, forceTipo, pre) {
     ${isMov ? "" : `<div class="field"><label>Scontrino ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label><input id="fFile" type="file" accept="image/*,application/pdf"><div class="muted" id="fFileInfo"></div></div>`}
     <div class="field"><label>Note</label><input id="fNote" value="${esc(s.note || "")}"></div>
     <div class="books" id="fBooks"></div>
+    <div id="fDup"></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">Salva</button>${ex ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
   // il riquadro "che cosa fa questa spesa" si riaggiorna a ogni scelta
@@ -995,6 +1100,7 @@ function formSpesa(id, tripName, forceTipo, pre) {
   ["#fImp", "#fVal", "#fData"].forEach(x => $(x).addEventListener("change", () => prev().then(updBooks)));
   updBooks();
   const fileIn = $("#fFile"); if (fileIn) fileIn.addEventListener("change", async () => { const f = fileIn.files[0]; if (!f) return; $("#fFileInfo").textContent = "Preparo la foto…"; pendingFile = await prepFile(f); $("#fFileInfo").textContent = `${pendingFile.name} · ${Math.round(pendingFile.base64.length * 0.75 / 1024)} KB`; });
+  let dupVisto = ""; // T7: la chiave dell'avviso gia' mostrato; se la spesa cambia, si riavvisa
   $("#fSave").addEventListener("click", async () => {
     s.importo = parseFloat(String($("#fImp").value).replace(",", ".")); if (!s.importo) return toast("Inserisci l'importo");
     s.valuta = $("#fVal").value; s.data = $("#fData").value; s.trasferta = $("#fTrip").value; s.descrizione = $("#fDesc").value.trim(); s.note = $("#fNote").value.trim();
@@ -1006,6 +1112,9 @@ function formSpesa(id, tripName, forceTipo, pre) {
     s.modificato = new Date().toISOString().slice(0, 19);
     // stima locale (il server ricalcola col cambio del giorno)
     s.importo_eur = Math.round(s.importo * (s.cambio || 1) * 100) / 100; computeSpesa(s);
+    // T7: se somiglia a una spesa gia' registrata si chiede conferma, non si blocca
+    const dup = dupDi(s, D.spese || []), chiave = dup.map(d => d.spesa.id).join(",") + "|" + s.importo + "|" + s.data + "|" + s.trasferta;
+    if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#fDup").innerHTML = avvisoDoppioni(dup); $("#fSave").textContent = "Salva comunque"; $("#fDup").scrollIntoView({ block: "nearest" }); return; }
     const payload = Object.assign({}, s); if (pendingFile) payload.file = pendingFile;
     if (pendingFile) payload.scontrino = "";
     closeModal();
