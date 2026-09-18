@@ -93,6 +93,15 @@ function computeSpesa(s) {
   s.n_persone = N; s.libri_ale = ale; s.libri_giulio = giu; s.saldo = Math.round(saldo * 100) / 100; return s;
 }
 const visibleSpese = () => (D.spese || []).filter(s => !(s.tipo === "personale" && s.conto && s.conto !== cfg.who));
+// T4 — la posta e' di chi l'ha ricevuta: prenotazioni e proposte dell'altro non
+// si vedono e non si confermano. Il filtro vero e' sul server (boot_ e la
+// risposta dello scan non le mandano nemmeno, e confermaProposta_ le rifiuta);
+// questo serve ai dati gia' in cache sul telefono, salvati da una versione
+// precedente della app. `persona` vuota vale Giulio: le righe scritte prima di
+// T3 sono state lette dalla sua casella (vedi personaRiga_ nel backend).
+const miaMail = r => String((r && r.persona) || "Giulio") === cfg.who;
+const visiblePren = () => (D.prenotazioni || []).filter(miaMail);
+const visibleProp = () => (D.proposte || []).filter(miaMail);
 // Quanto della spesa e' a carico di chi sta guardando: Giulio vede la SUA quota (le condivise
 // vanno sui libri di Alessandra per intero, a lui resta la parte sua), Alessandra vede il totale.
 const mioImporto = s => Math.round((cfg.who === "Giulio" ? (+s.libri_giulio || 0) : (+s.importo_eur || 0)) * 100) / 100;
@@ -269,7 +278,7 @@ function vOggi() {
   } else {
     h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt[0] ? `<div>Prossima: <b>${esc(nxt[0].nome)}</b> dal ${fmtDY(nxt[0].inizio)}</div>` : `<div>Aggiungi la prossima trasferta 👇</div>`}</div>`;
   }
-  const nPren = (D.prenotazioni || []).filter(p => p.stato === "nuova").length;
+  const nPren = visiblePren().filter(p => p.stato === "nuova").length;
   if (nPren) h += `<div class="card tap" onclick="go('prenotazioni')"><div class="row between"><div><b>📧 ${nPren} prenotazioni trovate nella mail</b><div class="muted">Tocca per collegarle alla checklist</div></div><span>›</span></div></div>`;
   const nProp = proposteNuove().length;
   if (nProp) h += `<div class="card tap" onclick="go('proposte')"><div class="row between"><div class="grow"><b>💳 ${nProp} propost${nProp === 1 ? "a" : "e"} di spesa</b><div class="muted">Ricevute trovate nella mail, da confermare una a una</div></div><span class="pill warn">${nProp}</span><span>›</span></div></div>`;
@@ -479,7 +488,7 @@ function vSaldo() {
 function vAltro() {
   return `<h1>Altro</h1>
     <div class="card tap" onclick="go('compensi')"><b>💶 Compensi caddie</b><div class="muted">Settimane, montepremi, cosa resta da bonificare</div></div>
-    <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${(D.prenotazioni || []).filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
+    <div class="card tap" onclick="go('prenotazioni')"><b>📧 Prenotazioni email</b><div class="muted">${visiblePren().filter(p => p.stato === "nuova").length} da collegare alla checklist</div></div>
     <div class="card tap" onclick="go('proposte')"><b>💳 Proposte di spesa</b><div class="muted">${proposteNuove().length} ricevute dalla mail da confermare</div></div>
     <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
     <div class="card tap" onclick="go('audit')"><b>🔎 Controllo dati</b><div class="muted">${auditRes ? `${(auditRes.trovati || []).length} segnalazioni al controllo del ${fmtDY(auditRes.quando)}` : "Celle rovinate, conti che non tornano, doppioni"}</div></div>
@@ -689,7 +698,7 @@ function midPren(p) { const d = notePren(p); return String((d && d.mid) || "").r
 // non automatica.
 function propDiPren(p) {
   if (!p) return null;
-  const props = D.proposte || [];
+  const props = visibleProp();
   const id = (notePren(p) || {}).prop_id;
   // prima l'aggancio esplicito; poi il messaggio, perche' le prenotazioni
   // scritte prima di T8 non hanno prop_id ma hanno lo stesso msg_id
@@ -712,7 +721,7 @@ function btnSpesaPren(p) {
 // Apre la proposta passando la trasferta della prenotazione: se la proposta non
 // ne aveva una (o ne aveva un'altra), quella giusta e' quella appena collegata.
 function spesaDaPren(prenId) {
-  const p = (D.prenotazioni || []).find(x => x.id === prenId);
+  const p = visiblePren().find(x => x.id === prenId);
   const q = propDiPren(p);
   if (!q) return toast("Da questa mail non e' nata nessuna proposta di spesa", 4000);
   const t = (D.trasferte || []).find(x => x.id === (p || {}).trasferta_id);
@@ -721,7 +730,7 @@ function spesaDaPren(prenId) {
 // Quale prenotazione e' agganciata a una voce di checklist.
 function prenDiVoce(voceId) {
   if (!voceId) return null;
-  return (D.prenotazioni || []).find(p => p.voce_id === voceId && p.stato === "collegata") || null;
+  return visiblePren().find(p => p.voce_id === voceId && p.stato === "collegata") || null;
 }
 // Bottoni della voce di checklist. Ordine voluto: prima la MAIL (al gate il link
 // del fornitore chiede login e rete), poi il PDF su Drive, che si apre anche in
@@ -752,7 +761,7 @@ function prenRighe(p) {
   return d.testo ? [d.testo] : [];
 }
 function bookingsSection(t) {
-  const pren = (D.prenotazioni || []).filter(p => p.trasferta_id === t.id);
+  const pren = visiblePren().filter(p => p.trasferta_id === t.id);
   const nuove = pren.filter(p => p.stato === "nuova"), fatte = pren.filter(p => p.stato === "collegata");
   if (!nuove.length && !fatte.length) return "";
   let h = "";
@@ -770,7 +779,7 @@ function itemPren(p) {
     <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
 }
 function vPrenotazioni() {
-  const all = (D.prenotazioni || []).slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
+  const all = visiblePren().slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
   const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "collegata");
   const ignorate = all.filter(p => p.stato === "ignorata");
   const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
@@ -810,14 +819,14 @@ async function ripristinaPren(id) {
 // Annulla un "Collega" sbagliato: la prenotazione torna fra quelle da collegare,
 // mantenendo la trasferta. La voce di checklist non viene toccata.
 async function scollegaPren(id) {
-  const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
+  const p = visiblePren().find(x => x.id === id); if (!p) return;
   await write("pren.stato", { id, stato: "nuova", voce_id: "" }, d => {
     const x = (d.prenotazioni || []).find(y => y.id === id); if (x) { x.stato = "nuova"; x.voce_id = ""; }
   });
   toast("Rimessa fra quelle da collegare. Ricollegandola, link, codice e dettagli vengono riscritti nella voce.", 5000);
 }
 function formPren(id) {
-  const p = (D.prenotazioni || []).find(x => x.id === id); if (!p) return;
+  const p = visiblePren().find(x => x.id === id); if (!p) return;
   const trips = (D.trasferte || []).slice().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
   const sugg = { volo: ["Volo andata", "Volo ritorno"], alloggio: ["Alloggio"], auto: ["Auto"], treno: ["Treno"], altro: [] }[p.tipo] || [];
   const tid0 = p.trasferta_id || (trips[0] || {}).id;
@@ -844,7 +853,7 @@ function formPren(id) {
 // la trasferta già quella giusta. Non salva niente: è il solito modulo, e si
 // chiude con Annulla se la spesa la vuoi registrare più tardi.
 function offriSpesaDopoCollega(prenId) {
-  const p = (D.prenotazioni || []).find(x => x.id === prenId);
+  const p = visiblePren().find(x => x.id === prenId);
   const q = propDiPren(p);
   if (!q || q.stato !== "nuova") return false;
   setTimeout(() => spesaDaPren(prenId), 900);   // dopo il toast, non sopra
@@ -855,7 +864,7 @@ function offriSpesaDopoCollega(prenId) {
 // Lo script legge dalla posta ricevute e fatture e prepara delle proposte.
 // Niente finisce in Spese finché non premi "Crea la spesa" qui sotto: chi ha
 // pagato e il tipo (personale / condivisa / ciascuno) la mail non può saperli.
-const proposteNuove = () => (D.proposte || []).filter(p => p.stato === "nuova");
+const proposteNuove = () => visibleProp().filter(p => p.stato === "nuova");
 function propNote(p) { try { return JSON.parse(p.note || "null") || {}; } catch (e) { return {}; } }
 // Gli avvisi della carta non diventano mai proposte, ma confermano (o correggono)
 // l'importo letto dalla ricevuta del fornitore.
@@ -881,7 +890,7 @@ function itemProposta(p) {
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px"><button class="btn sm primary" onclick="formProposta('${p.id}')">Conferma</button><button class="btn sm" onclick="ignoraProposta('${p.id}')">Ignora</button></div></div></div>`;
 }
 function vProposte() {
-  const all = (D.proposte || []).slice().sort((a, b) => a.data < b.data ? 1 : -1);
+  const all = visibleProp().slice().sort((a, b) => a.data < b.data ? 1 : -1);
   const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "confermata");
   const ignorate = all.filter(p => p.stato === "ignorata");
   const tot = nuove.reduce((a, p) => a + (p.valuta === "EUR" || !p.valuta ? Number(p.importo) || 0 : 0), 0);
@@ -919,7 +928,7 @@ async function ripristinaProposta(id) {
 // `pre` (facoltativo) preseleziona dei campi: lo usa il bottone della
 // prenotazione per proporre la trasferta a cui la prenotazione e' collegata.
 function formProposta(id, pre) {
-  const p = (D.proposte || []).find(x => x.id === id); if (!p) return;
+  const p = visibleProp().find(x => x.id === id); if (!p) return;
   const n = propNote(p);
   const trip0 = (pre && pre.trasferta) || p.trasferta;
   const s = { tipo: "condivisa", pagato_da: cfg.who, n_persone: 2 };
