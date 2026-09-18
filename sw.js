@@ -1,7 +1,15 @@
 // Service worker: cache dell'app per l'uso offline (i dati stanno in localStorage)
-// Bump CACHE e i ?v= in index.html insieme, a ogni modifica di app.js/style.css.
-const CACHE = "trasferte-v28";
-const ASSETS = ["./", "./index.html", "./style.css?v=27", "./app.js?v=27", "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-180.png"];
+// A ogni modifica di app.js/style.css: cambiare V qui sotto e i due ?v= in
+// index.html. Sono TRE numeri in tutto, e in questo file uno solo.
+// ⚠ Prima il numero in sw.js stava in tre punti (CACHE e i due ?v= dentro
+// ASSETS) e ogni tanto restavano indietro: a v23 ASSETS diceva ancora v22, e
+// il 18 set il giro di T4 ha bumpato CACHE lasciando ASSETS a v27. Un ASSETS
+// vecchio non si vede online (il fetch va prima in rete) ma rompe l'OFFLINE:
+// si precarica app.js?v=27 mentre la pagina chiede app.js?v=28, e senza rete
+// quella richiesta non trova niente in cache. Ora ASSETS lo ricava da V.
+const V = 28;
+const CACHE = "trasferte-v" + V;
+const ASSETS = ["./", "./index.html", `./style.css?v=${V}`, `./app.js?v=${V}`, "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-180.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", e => {
