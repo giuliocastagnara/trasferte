@@ -1038,7 +1038,7 @@ function formCompenso(tripId) {
   ["#kFisso", "#kPrize", "#kExtra"].forEach(x => $(x).addEventListener("input", prev)); prev();
   // il pagamento vero si registra per l'importo NETTO, non per il compenso lordo:
   // un solo bonifico chiude sia il compenso sia il saldo di quella trasferta
-  if (ex) $("#kPay").addEventListener("click", () => { const imp = Math.abs(dpOra); closeModal(); formSpesa(null, t.nome, "regolamento", { importo: imp ? imp : "", valuta: "EUR", cambio: 1, pagato_da: dpOra < 0 ? "Giulio" : "Alessandra", descrizione: "Saldo " + t.nome }); });
+  if (ex) $("#kPay").addEventListener("click", () => { const imp = Math.abs(dpOra); closeModal(); formSpesa(null, t.nome, "regolamento", { importo: imp ? imp : "", valuta: "EUR", cambio: 1, pagato_da: dpOra < 0 ? "Giulio" : "Alessandra", descrizione: "Saldo " + t.nome }, ex.id); });
   $("#kSave").addEventListener("click", async () => {
     c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim(); c.stato = $("#kStato").value;
     closeModal(); toast("Salvo…");
@@ -1054,11 +1054,24 @@ async function segnaPagati() {
   try { const r = await api("compenso.stato", { ids, stato: "pagato", data: today() }); r.forEach(c => { const i = D.compensi.findIndex(x => x.id === c.id); if (i >= 0) D.compensi[i] = c; }); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
 }
 
+// Chiede se il compenso da cui arriva il pagamento va segnato saldato (T9).
+// Riusa l'azione compenso.stato: nessuna API nuova.
+async function chiediSaldato(compId, data) {
+  const c = (D.compensi || []).find(x => x.id === compId);
+  if (!c || c.stato === "pagato") return;
+  if (!confirm(`Pagamento registrato. Segnare anche il compenso "${c.trasferta}" come saldato?
+(Se era solo un acconto, rispondi No.)`)) return;
+  try { const r = await api("compenso.stato", { ids: [compId], stato: "pagato", data: data || today() }); r.forEach(x => { const i = D.compensi.findIndex(y => y.id === x.id); if (i >= 0) D.compensi[i] = x; }); LS.set("data", D); render(); toast("Compenso segnato come saldato"); }
+  catch (e) { toast("Errore: " + e.message, 4000); }
+}
+
 // ---------------------------------------------------------------- FORM SPESA
 let pendingFile = null;
 // pre = valori gia' compilati (importo, pagato_da, descrizione): serve a "Registra pagamento",
 // che arriva dal compenso con l'importo netto gia' calcolato
-function formSpesa(id, tripName, forceTipo, pre) {
+// compId = il compenso da cui arriva il pagamento: serve solo per chiedere, dopo il
+// salvataggio, se segnarlo saldato (T9)
+function formSpesa(id, tripName, forceTipo, pre, compId) {
   const ex = id ? (D.spese || []).find(s => s.id === id) : null;
   const cur = currentTrip();
   const s = ex ? Object.assign({}, ex) : Object.assign({ data: today(), trasferta: tripName || (cur ? cur.nome : ""), categoria: forceTipo === "caddie" ? "Golf - Caddie" : "", descrizione: "", importo: "", valuta: (cur && cur.valuta) || "EUR", pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" }, pre || {});
@@ -1083,7 +1096,7 @@ function formSpesa(id, tripName, forceTipo, pre) {
     <div class="field"><label>Descrizione</label><input id="fDesc" value="${esc(s.descrizione)}" placeholder="${s.tipo === "caddie" ? "es. Caddie Aprile/Maggio" : s.tipo === "regolamento" ? "es. Bonifico saldo Australia" : "es. Cena, Benzina, Hotel…"}"></div>
     <div class="field"><label>${s.tipo === "regolamento" ? "Chi paga" : "Chi ha pagato"}</label><div class="seg" id="segChi">${PERSONE.map(p => `<button data-v="${p}" class="${s.pagato_da === p ? "on" : ""}">${p}</button>`).join("")}</div></div>
     <div class="field" id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}><label>In quante persone si divide</label><div class="seg" id="segN">${[2, 3, 4, 5, 6].map(n => `<button data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">${n}</button>`).join("")}</div></div>
-    ${isMov ? "" : `<div class="field"><label>Scontrino ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label><input id="fFile" type="file" accept="image/*,application/pdf"><div class="muted" id="fFileInfo"></div></div>`}
+    ${s.tipo === "caddie" ? "" : `<div class="field"><label>${s.tipo === "regolamento" ? "Fattura" : "Scontrino"} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label><input id="fFile" type="file" accept="image/*,application/pdf"><div class="muted" id="fFileInfo">${s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : ""}</div></div>`}
     <div class="field"><label>Note</label><input id="fNote" value="${esc(s.note || "")}"></div>
     <div class="books" id="fBooks"></div>
     <div id="fDup"></div>
@@ -1120,6 +1133,9 @@ function formSpesa(id, tripName, forceTipo, pre) {
     closeModal();
     const res = await write("spesa.save", payload, d => { const i = d.spese.findIndex(x => x.id === s.id); if (i >= 0) d.spese[i] = s; else d.spese.push(s); });
     if (res) { const i = D.spese.findIndex(x => x.id === res.id); if (i >= 0) D.spese[i] = res; LS.set("data", D); render(); toast("Salvato" + (res.valuta !== "EUR" ? ` · ${eur(res.importo_eur)}` : "")); }
+    // T9: il pagamento arriva da un compenso → si CHIEDE se segnarlo saldato.
+    // Mai automatico: un acconto chiuderebbe per sbaglio l'intero compenso.
+    if (res && compId) await chiediSaldato(compId, s.data);
   });
   if (ex) $("#fDel").addEventListener("click", async () => { if (!confirm("Eliminare questa spesa?")) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); }); });
 }
