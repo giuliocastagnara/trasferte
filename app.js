@@ -875,6 +875,31 @@ function rigaCarta(p) {
   if (c.corretto) return `<div class="dett"><b>⟳ importo preso dalla carta</b> (la mail diceva ${num(c.prima)})</div>`;
   return "";
 }
+// Quando una proposta viene riaperta, la mail viene riletta con il lettore di
+// oggi: se l'importo che ne esce non e' quello scritto sulla riga, la riga NON
+// viene corretta di nascosto (potrebbe essere il nuovo lettore a sbagliare). Ma
+// il modulo di conferma arriva precompilato, e confermare senza guardare vuol
+// dire mettere in Spese il numero vecchio: sulla fattura Apple erano 8,19 €
+// (l'imponibile, letto per errore) contro i 9,99 € davvero addebitati.
+// Quindi qui si vede, con un bottone che lo sostituisce in un tocco.
+function rigaRilettura(p) {
+  const n = propNote(p) || {};
+  if (!n.rilettura) return "";
+  const v = Number(n.rilettura) || 0;
+  const val = n.rilettura_valuta || p.valuta || "EUR";
+  return `<div class="dett"><b>⚠ rileggendo la mail l'importo risulta ${esc(num(v))} ${esc(val)}</b>, non ${esc(num(Number(p.importo) || 0))} ${esc(p.valuta || "EUR")} — controlla prima di confermare
+    <button class="btn sm" style="margin-left:6px" onclick="usaRilettura(${v})">usa ${esc(num(v))}</button></div>`;
+}
+// `$` vuole un SELETTORE, non un id: "#qImp". E dopo aver scritto nel campo va
+// lanciato l'evento input, se no l'anteprima in euro e i libri restano al
+// numero di prima (ci sono appesi due listener).
+function usaRilettura(v) {
+  const e = $("#qImp"); if (!e) return;
+  e.value = v;
+  e.dispatchEvent(new Event("input", { bubbles: true }));
+  e.dispatchEvent(new Event("change", { bubbles: true }));
+  toast("Importo aggiornato: controlla anche la valuta", 3000);
+}
 function propImporto(p) {
   const v = Number(p.importo) || 0;
   return (p.valuta && p.valuta !== "EUR") ? num(v) + " " + esc(p.valuta) : eur(v);
@@ -939,6 +964,7 @@ function formProposta(id, pre) {
     <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
       ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
       ${rigaCarta(p)}
+      ${rigaRilettura(p)}
       ${p.file_url ? `<a href="${esc(p.file_url)}" target="_blank" rel="noopener">🧾 apri il PDF allegato</a>` : n.pdf ? `<div class="muted">PDF nella mail ma non salvato</div>` : `<div class="muted">Nessun allegato: la spesa resterà senza scontrino</div>`}
       ${n.link ? ` · <a href="${esc(n.link)}" target="_blank" rel="noopener">apri la mail del fornitore</a>` : ""}</div>
     <div class="cols3"><div class="field"><label>Importo</label><input id="qImp" inputmode="decimal" value="${esc(p.importo)}"></div>
