@@ -1399,6 +1399,8 @@ function moduloSpesa(o) {
   // /2 /3 /4 (§3.4). Se una riga vecchia si divide in 5 o 6, quella pasticca resta:
   // non si perde un valore gia' scritto solo perche' il modulo e' cambiato.
   const nSplit = [...new Set([2, 3, 4, Math.max(2, parseInt(s.n_persone, 10) || 2)])].sort((a, b) => a - b);
+  // Dietro "altre…": il menu fino a 12, e in fondo "un altro numero…" per scriverlo.
+  const nMenu = [...new Set([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, Math.max(2, parseInt(s.n_persone, 10) || 2)])].sort((a, b) => a - b);
   const TIPO_BTN = { condivisa: ["Condivisa", "una la paga, la dividete"], ciascuno: ["Ognuno la sua", "avete già pagato metà ciascuno"], personale: ["Personale", "solo tua"] };
   pendingFile = null;
   openModal(`
@@ -1407,17 +1409,20 @@ function moduloSpesa(o) {
     <div class="field"><label>Importo</label>
       <div class="improw"><input id="fImp" class="impbig" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"><span class="impval" id="fValLab">${esc(v0)}</span></div>
       <div class="chips" id="fChipVal">${chipVal.map(v => `<button type="button" data-v="${esc(v)}" class="${v === v0 ? "on" : ""}">${esc(v)}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
-      <select id="fVal" hidden>${[...new Set([v0, ...vals])].map(v => `<option ${v === v0 ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+      <select id="fVal" class="altre" hidden>${[...new Set([v0, ...vals])].map(v => `<option ${v === v0 ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
     <div class="preview" id="fPrev">${o.ex && v0 !== "EUR" && s.importo_eur ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
     ${conTipo ? `<div class="field"><div class="tipi" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button type="button" data-v="${k}" class="${s.tipo === k ? "on" : ""}"><b>${TIPO_BTN[k][0]}</b><span>${TIPO_BTN[k][1]}</span></button>`).join("")}</div>
-      <div class="row split" id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}><span class="muted">In quante parti</span><div class="chips inline" id="segN">${nSplit.map(n => `<button type="button" data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">÷${n}</button>`).join("")}</div></div></div>` : ""}
+      <div id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}>
+        <div class="row split"><span class="muted">In quante parti</span><div class="chips inline" id="segN">${nSplit.map(n => `<button type="button" data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">÷${n}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div></div>
+        <select id="fNP" class="altre" hidden>${nMenu.map(n => `<option value="${n}" ${+s.n_persone === n ? "selected" : ""}>in ${n} parti</option>`).join("")}<option value="__x">un altro numero…</option></select>
+        <input id="fNPX" class="altre" type="number" inputmode="numeric" min="2" step="1" placeholder="in quante parti" hidden></div></div>` : ""}
     <div class="books" id="fBooks"></div>
     <details class="spiega"><summary>?</summary>${(conTipo ? ["condivisa", "ciascuno", "personale"] : [s.tipo]).map(k => `<p><b>${esc(TIPI[k] || k)}</b> — ${esc(TIPO_NOTA[k] || "")}</p>`).join("")}${o.aiuto ? `<p>${esc(o.aiuto)}</p>` : ""}</details>
     <div class="field"><label>${s.tipo === "regolamento" ? "Chi paga" : "Chi ha pagato"}</label><div class="seg" id="segChi">${PERSONE.map(p => `<button type="button" data-v="${p}" class="${s.pagato_da === p ? "on" : ""}">${p}${cfg.who === p ? " (tu)" : ""}</button>`).join("")}</div></div>
     <div class="field"><label>Trasferta</label><select id="fTrip">${s.trasferta ? "" : `<option value="" selected>Scegli la trasferta…</option>`}${trips.map(t => `<option ${t === s.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}<option value="__new">＋ Nuova…</option></select></div>
     ${conCat ? `<div class="field"><label>Categoria</label>
       <div class="chips" id="fChipCat">${chipCat.map(c => `<button type="button" data-v="${esc(c)}" class="${c === s.categoria ? "on" : ""}">${esc(catBreve(c))}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
-      <select id="fCat" hidden>${cats.map(c => `<option ${c === s.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>` : ""}
+      <select id="fCat" class="altre" hidden>${cats.map(c => `<option ${c === s.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>` : ""}
     <div class="field"><label>Descrizione</label><input id="fDesc" value="${esc(s.descrizione)}" placeholder="${s.tipo === "caddie" ? "es. Caddie Aprile/Maggio" : s.tipo === "regolamento" ? "es. Bonifico saldo Australia" : "es. Cena, Benzina, Hotel…"}"><div class="chips" id="fSugg"></div></div>
     ${conFile ? `<div class="field"><label>${esc(o.etichettaFile)} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label>
       <div class="row" style="gap:8px"><button type="button" class="btn grow" id="fCam">📷 Scatta</button><button type="button" class="btn grow" id="fGal">🖼 Galleria o file</button></div>
@@ -1454,7 +1459,27 @@ function moduloSpesa(o) {
   };
   if (conTipo) seg("#segTipo", v => { s.tipo = v; const n = $("#fN"); if (n) n.hidden = !(v === "condivisa" || v === "ciascuno"); updBooks(); });
   seg("#segChi", v => { s.pagato_da = v; updBooks(); });
-  seg("#segN", v => { s.n_persone = +v; updBooks(); });
+  // In quante parti: le tre pasticche per il caso normale, il menu fino a 12 dietro
+  // "altre…" e, in fondo a quello, il campo in cui scrivere il numero vero. Da
+  // qualunque delle tre strade arrivi, la pasticca accesa resta quella giusta (o
+  // nessuna, se il numero non e' fra le tre).
+  const accendiN = v => { const el = $("#segN"); if (!el) return; el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === String(v))); };
+  const setN = v => { const n = Math.max(2, parseInt(v, 10) || 2); s.n_persone = n; accendiN(n); updBooks(); };
+  chips("#segN", v => {
+    const sel = $("#fNP"), x = $("#fNPX");
+    if (v === null) { if (sel) sel.hidden = false; return; }   // "altre…": apre il menu
+    if (x) x.hidden = true;
+    if (sel) sel.value = String(+v);
+    s.n_persone = +v; updBooks();
+  });
+  const selNP = $("#fNP");
+  if (selNP) selNP.addEventListener("change", () => {
+    const x = $("#fNPX");
+    if (selNP.value === "__x") { if (x) { x.hidden = false; x.value = s.n_persone; x.focus(); } return; }
+    if (x) x.hidden = true;
+    setN(selNP.value);
+  });
+  const inNP = $("#fNPX"); if (inNP) inNP.addEventListener("input", () => setN(inNP.value));
   chips("#fChipVal", v => { const sel = $("#fVal"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; const l = $("#fValLab"); if (l) l.textContent = v; prev().then(updBooks); });
   chips("#fChipCat", v => { const sel = $("#fCat"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; s.categoria = v; updSugg(); });
   const selVal = $("#fVal"); if (selVal) selVal.addEventListener("change", () => { const l = $("#fValLab"); if (l) l.textContent = selVal.value; prev().then(updBooks); });
