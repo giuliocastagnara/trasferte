@@ -252,22 +252,31 @@ function render() {
   $("#whoBtn").textContent = cfg.who;
   // Le sotto-pagine accendono il tab da cui dipendono: prima non ne accendevano
   // nessuno e la app sembrava "uscita" dalla navigazione (§6 del ticket T10).
-  const tab = NAV_PADRE[view] || view;
-  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === tab));
+  // Le pagine dell'ingranaggio (Documenti, Controllo dati, Impostazioni) non hanno
+  // un tab loro: resta acceso quello da cui si e' partiti.
+  const tab = view in NAV_PADRE ? NAV_PADRE[view] : view;
+  if (tab) tabAcceso = tab;
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.v === tabAcceso));
   const bdg = $("#navBadge");
   if (bdg) { const n = postaDaFare().length; bdg.textContent = n > 99 ? "99+" : String(n); bdg.classList.toggle("hidden", !n); }
   setNet();
-  const map = { posta: vPosta, prenotazioni: vPrenotazioni, proposte: vProposte, compensi: vCompensi, audit: vAudit, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, spese: vSpese, saldo: vSaldo, altro: vAltro, dashboard: vDashboard, documenti: vDocumenti, impostazioni: vImpostazioni };
+  const map = { posta: vPosta, soldi: vSoldi, audit: vAudit, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, documenti: vDocumenti, impostazioni: vImpostazioni };
   $("#view").innerHTML = (map[view] || vOggi)();
   const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
 }
-// Quale tab del fondo si accende per ogni pagina. Posta e' un tab a se' (T10 giro 1),
-// il Conto e i Compensi sono passati sotto Altro.
-const NAV_PADRE = { trip: "trasferte", prenotazioni: "posta", proposte: "posta", saldo: "altro", compensi: "altro", dashboard: "altro", documenti: "altro", impostazioni: "altro", audit: "altro" };
+// Quale tab del fondo si accende per ogni pagina (T10 giro 3: cinque tab,
+// Oggi · Trasferte · ＋ · Posta · Soldi). "" = nessuno suo, resta l'ultimo acceso.
+const NAV_PADRE = { trip: "trasferte", documenti: "", impostazioni: "", audit: "" };
+let tabAcceso = "oggi";
+// Le rotte di prima di questo giro: chi le chiama ancora finisce nel segmento
+// giusto di Soldi (o nel foglietto dell'ingranaggio), non su una pagina vuota.
+const ROTTE_VECCHIE = { spese: ["soldi", "spese"], saldo: ["soldi", "conto"], compensi: ["soldi", "compensi"], dashboard: ["soldi", "anno"] };
 // Il "‹" delle sotto-pagine tornava sempre ad Altro anche quando ci si era
 // arrivati da Oggi. Adesso si ripercorre la strada fatta.
 let navBack = [];
 function go(v, arg) {
+  if (v === "altro") return apriAltro();
+  if (ROTTE_VECCHIE[v]) { arg = ROTTE_VECCHIE[v][1]; v = ROTTE_VECCHIE[v][0]; }
   if (v !== "trip" || arg !== viewArg) checkOrdina = false;
   if (v !== view || arg !== viewArg) { navBack.push({ v: view, a: viewArg }); if (navBack.length > 20) navBack.shift(); }
   view = v; viewArg = arg; render();
@@ -278,7 +287,19 @@ function indietro(def) {
   checkOrdina = false; view = b.v; viewArg = b.a; render();
 }
 document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "add") return formSpesa(); go(b.dataset.v); }));
-$("#whoBtn").addEventListener("click", () => toast("Sei collegato come " + cfg.who + " (dipende dal token)"));
+// L'ingranaggio in alto e il chip col nome (che prima non faceva niente) aprono
+// lo stesso foglietto: quello che era il tab "Altro" (§3.1 del ticket).
+$("#whoBtn").addEventListener("click", apriAltro);
+$("#gearBtn").addEventListener("click", apriAltro);
+function apriAltro() {
+  if (!D) return;
+  const riga = (fn, ico, tit, sotto) => `<div class="card tap" style="margin-bottom:8px" onclick="closeModal();${fn}"><div class="row between"><div class="grow"><b>${ico} ${tit}</b><div class="muted">${sotto}</div></div><span>›</span></div></div>`;
+  openModal(`<div class="row between" style="margin-bottom:10px"><h2 style="margin:0">Altro</h2><span class="muted">collegato come <b>${esc(cfg.who)}</b></span></div>
+    ${riga("go('documenti')", "🪪", "Documenti", "Passaporti, licenze, visti, assicurazioni")}
+    ${riga("go('audit')", "🔎", "Controllo dati", auditRes ? `${(auditRes.trovati || []).length} segnalazioni al controllo del ${fmtDY(auditRes.quando)}` : "Celle rovinate, conti che non tornano, doppioni")}
+    ${riga("go('impostazioni')", "⚙️", "Impostazioni", "Categorie, checklist, report per il commercialista, collegamento")}
+    ${riga("reload()", "🔄", "Ricarica dati", queue.length ? queue.length + " modifiche in attesa di invio" : "Tutto sincronizzato")}`);
+}
 
 // ---- setup iniziale
 function renderSetup() {
@@ -302,56 +323,73 @@ function renderSetup() {
 }
 
 // ---- OGGI
+// Giorni da oggi a una data (negativi se e' passata).
+const giorniA = d => Math.round((new Date(String(d).slice(0, 10) + "T00:00:00") - new Date(today() + "T00:00:00")) / 864e5);
+// Il saldo di UNA trasferta detto nella voce di chi guarda ("su questa trasferta
+// Alessandra ti deve 45 €"). Stesso conto di saldoTrasferta, solo la frase cambia.
+function saldoTripIo(nome) {
+  const v = saldoTrasferta(nome);
+  return Math.abs(v) < 0.005 ? "Su questa trasferta siete pari" : "Su questa trasferta " + saldoIo(v);
+}
+// T10 giro 3 (§3.2): l'hero della trasferta in corso porta due azioni, la posta e'
+// una carta sola, il conto e' una riga nella voce di chi legge, poi la prossima
+// trasferta e le ultime TRE spese (Q5). Il bottone "Aggiungi spesa" in fondo non
+// c'e' piu': la stessa cosa la fanno il ＋ della barra e l'hero.
 function vOggi() {
-  const t = currentTrip(); const nxt = nextTrips().slice(0, 3); const s = saldoTot();
+  const t = currentTrip(); const nxt = nextTrips()[0]; const s = saldoTot();
   let h = `<h1>Ciao ${cfg.who} 👋</h1>`;
   if (t) {
-    const cs = checkSummary(t.id), tot = tripTotals(t.nome);
-    h += `<div class="card hero tap" onclick="go('trip','${t.id}')">
-      <div class="muted">Trasferta in corso</div>
-      <div class="big">${esc(t.nome)}</div>
-      <div class="row between" style="margin-top:6px"><span>${fmtD(t.inizio)} → ${fmtD(t.fine)} ${t.citta ? "· " + esc(t.citta) : ""}</span><span class="pill">${t.valuta || "EUR"}</span></div>
-      <div class="row between" style="margin-top:10px"><span>Checklist ${cs.done}/${cs.tot}</span><span>Spese: ${eur(tot.mio)}</span></div>
-      ${cs.open.length ? `<div class="muted" style="margin-top:6px">Da fare: ${cs.open.map(c => esc(c.voce)).join(", ")}</div>` : ""}
+    const cs = checkSummary(t.id), tot = tripTotals(t.nome), gg = giorniA(t.fine);
+    h += `<div class="card hero">
+      <div class="muted">In corso${gg > 0 ? ` · ${gg} giorn${gg === 1 ? "o" : "i"} al rientro` : gg === 0 ? " · ultimo giorno" : ""}</div>
+      <div class="big tap" onclick="go('trip','${t.id}')">${esc(t.nome)}</div>
+      <div class="row between" style="margin-top:4px"><span>${fmtD(t.inizio)} → ${fmtD(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</span><span class="pill">${esc(t.valuta || "EUR")}</span></div>
+      <div class="row between" style="margin-top:10px"><span>Spese tue <b>${eur(tot.mio)}</b></span><span>Checklist <b>${cs.done}/${cs.tot}</b></span></div>
+      <div class="muted" style="margin-top:4px">${esc(saldoTripIo(t.nome))}</div>
+      <div class="row acts"><button class="btn grow" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa</button><button class="btn grow" onclick="go('trip','${t.id}')">Checklist${cs.open.length ? ` · ${cs.open.length} da fare` : ""}</button></div>
     </div>`;
   } else {
-    h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt[0] ? `<div>Prossima: <b>${esc(nxt[0].nome)}</b> dal ${fmtDY(nxt[0].inizio)}</div>` : `<div>Aggiungi la prossima trasferta 👇</div>`}</div>`;
+    h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt ? `<div>Prossima: <b>${esc(nxt.nome)}</b> dal ${fmtDY(nxt.inizio)}</div>` : `<div>Aggiungi la prossima trasferta dalla pagina Trasferte</div>`}</div>`;
   }
   // Una carta sola per la posta: prenotazioni e ricevute stanno ormai insieme.
   const posta = postaDaFare();
   if (posta.length) {
+    const nP = posta.filter(c => c.pren && c.pren.stato === "nuova").length, nQ = posta.filter(c => c.prop && c.prop.stato === "nuova").length;
     const totP = posta.reduce((a, c) => a + (c.prop && c.prop.stato === "nuova" && (!c.prop.valuta || c.prop.valuta === "EUR") ? Number(c.prop.importo) || 0 : 0), 0);
-    h += `<div class="card tap" onclick="go('posta')"><div class="row between"><div class="grow"><b>📬 ${posta.length} cos${posta.length === 1 ? "a" : "e"} da sistemare nella posta</b><div class="muted">Prenotazioni da collegare e ricevute da registrare${totP ? " · " + eur(totP) : ""}</div></div><span class="pill warn">${posta.length}</span><span>›</span></div></div>`;
+    h += `<div class="card tap" style="border-color:var(--warn)" onclick="go('posta')"><div class="row between"><div class="grow"><b>📬 ${posta.length} cos${posta.length === 1 ? "a" : "e"} in Posta</b><div class="muted">${nP ? nP + " prenotazion" + (nP === 1 ? "e" : "i") : ""}${nP && nQ ? " · " : ""}${nQ ? nQ + " ricevut" + (nQ === 1 ? "a" : "e") + (totP ? " (" + eur(totP) + ")" : "") : ""}</div></div><span class="pill bad">${posta.length}</span><span>›</span></div></div>`;
   }
   // Promemoria scontrini: solo le MIE spese dell'anno in corso a cui manca la foto
   const annoOra = today().slice(0, 4), meseOra = today().slice(0, 7);
   const noSc = mieSpese().filter(x => !x.scontrino && String(x.data).slice(0, 4) === annoOra);
   const noScMese = noSc.filter(x => String(x.data).slice(0, 7) === meseOra).length;
   if (noSc.length) h += `<div class="card tap" onclick="apriSenzaScontrino('${annoOra}')"><div class="row between"><div class="grow"><b>🧾 Scontrini mancanti</b><div class="muted">${noSc.length} spes${noSc.length === 1 ? "a" : "e"} senza foto nel ${annoOra}${noScMese ? ` · ${noScMese} di questo mese` : ""}</div></div><span class="pill ${noScMese ? "bad" : "warn"}">${noSc.length}</span><span>›</span></div></div>`;
-  h += `<div class="card tap" onclick="go('saldo')"><div class="row between"><div><div class="muted">Conto tra voi</div><div style="font-weight:700;font-size:18px">${saldoLabel(s)}</div></div><span>›</span></div></div>`;
-  if (nxt.length) {
-    h += `<h2>Prossime trasferte</h2>`;
-    nxt.forEach(x => { const cs = checkSummary(x.id); const days = Math.round((new Date(x.inizio) - new Date(today())) / 864e5);
-      h += `<div class="card tap" onclick="go('trip','${x.id}')"><div class="row between"><div class="grow"><b>${esc(x.nome)}</b><div class="muted">${fmtDY(x.inizio)} → ${fmtDY(x.fine)} · tra ${days} gg</div></div>
-        <span class="pill ${cs.open.length ? (days < 14 ? "bad" : "warn") : ""}">${cs.open.length ? cs.open.length + " da fare" : "✓ pronta"}</span></div></div>`; });
+  // Il conto nella voce di chi legge (saldoIo), non "+4 918 €" con la legenda.
+  h += `<div class="card tap" onclick="go('soldi','conto')"><div class="row between"><div class="grow"><div class="muted">Conto</div><div style="font-weight:700;font-size:17px">${esc(frase(saldoIo(s)))}</div></div><span>›</span></div></div>`;
+  if (nxt) {
+    const cs = checkSummary(nxt.id), days = giorniA(nxt.inizio);
+    h += `<h2>Prossima</h2><div class="card tap" onclick="go('trip','${nxt.id}')"><div class="row between"><div class="grow"><b>${esc(nxt.nome)}</b><div class="muted">${fmtD(nxt.inizio)} → ${fmtD(nxt.fine)} · tra ${days} giorn${days === 1 ? "o" : "i"}${nxt.valuta && nxt.valuta !== "EUR" ? " · " + esc(nxt.valuta) : ""}</div></div>
+      <span class="pill ${cs.open.length ? (days < 14 ? "bad" : "warn") : ""}">${cs.open.length ? cs.open.length + " da fare" : "✓ pronta"}</span></div></div>`;
   }
   // Fuori i compensi caddie e i pagamenti fra loro due: non sono "spese" e
   // leggerli qui faceva sembrare i tre bonifici delle uscite (§6 del ticket).
   const recent = visibleSpese().filter(s => s.tipo !== "caddie" && s.tipo !== "regolamento")
-    .sort((a, b) => (b.creato || "") < (a.creato || "") ? -1 : 1).slice(0, 5);
-  if (recent.length) { h += `<h2>Ultime spese</h2><div class="card list">` + recent.map(s => itemSpesa(s)).join("") + `</div>`; }
-  h += `<button class="btn primary block" onclick="formSpesa()">＋ Aggiungi spesa</button>`;
+    .sort((a, b) => (b.creato || "") < (a.creato || "") ? -1 : 1).slice(0, 3);
+  if (recent.length) { h += `<h2>Ultime spese</h2><div class="card list">` + recent.map(s => itemSpesa(s, true)).join("") + `</div>`; }
   return h;
 }
+// Prima lettera maiuscola: saldoIo parla in mezzo a una frase ("devi a…").
+const frase = s => s.charAt(0).toUpperCase() + s.slice(1);
 
+// La riga di una spesa. §3.6: l'icona dello scontrino compare solo quando MANCA
+// (prima c'era un quadrato grigio in ogni caso, e non diceva niente).
 function itemSpesa(s, mio) {
   const pieno = Math.round((+s.importo_eur || 0) * 100) / 100, val = mio ? mioImporto(s) : pieno, parz = mio && Math.abs(val - pieno) > 0.005;
-  const tag = s.tipo === "condivisa" ? `<span class="pill">condivisa${+s.n_persone > 2 ? " /" + s.n_persone : ""}</span>` : s.tipo === "ciascuno" ? `<span class="pill blue">ognuno la sua</span>` : s.tipo === "personale" ? `<span class="pill grey">${esc(s.conto)}</span>` : s.tipo === "caddie" ? `<span class="pill warn">compenso caddie</span>` : `<span class="pill warn">pagamento</span>`;
+  const tag = s.tipo === "condivisa" ? `<span class="pill">condivisa${+s.n_persone > 2 ? " ÷" + s.n_persone : ""}</span>` : s.tipo === "ciascuno" ? `<span class="pill blue">ognuno la sua</span>` : s.tipo === "personale" ? `<span class="pill grey">${esc(s.conto)}</span>` : s.tipo === "caddie" ? `<span class="pill warn">compenso caddie</span>` : `<span class="pill warn">pagamento</span>`;
   const orig = !parz && s.valuta && s.valuta !== "EUR" ? `<span class="muted">${num(s.importo)} ${esc(s.valuta)}</span> ` : "";
+  const manca = !s.scontrino && s.tipo !== "caddie" ? `<div class="nosc" title="manca lo scontrino">🧾 manca</div>` : "";
   return `<div class="item tap" onclick="formSpesa('${s.id}')">
-    <div class="thumb">${s.scontrino ? "🧾" : "·"}</div>
-    <div class="grow"><div class="ellipsis"><b>${esc(s.descrizione || s.categoria)}</b></div><div class="muted ellipsis">${fmtD(s.data)} · ${esc(s.trasferta)} · ${esc(s.categoria)} · ${esc(s.pagato_da)}</div><div>${tag}</div></div>
-    <div style="text-align:right">${orig}<div class="amt">${eur(val)}</div>${parz ? `<div class="muted">su ${eur(pieno)}</div>` : ""}</div></div>`;
+    <div class="grow"><div class="ellipsis"><b>${esc(s.descrizione || s.categoria)}</b></div><div class="muted ellipsis">${fmtD(s.data)} · ${esc(s.trasferta)} · ${esc(catBreve(s.categoria))} · ${esc(s.pagato_da)}</div><div>${tag}</div></div>
+    <div style="text-align:right">${orig}<div class="amt">${eur(val)}</div>${parz ? `<div class="muted">su ${eur(pieno)}</div>` : ""}${manca}</div></div>`;
 }
 
 // ---- TRASFERTE
@@ -456,17 +494,74 @@ function bars(obj, total) {
 function apriSenzaScontrino(anno) {
   fSp.q = ""; fSp.trip = ""; fSp.tipo = ""; fSp.cat = "";
   fSp.anno = anno || today().slice(0, 4); fSp.noScont = true;
-  go("spese");
+  go("soldi", "spese");
 }
 
-// ---- SPESE (lista con filtri)
-// La pagina mostra SOLO le spese che compongono la carta "Spese <chi guarda>" della dashboard:
+// ---------------------------------------------------------------- SOLDI (T10, giro 3)
+// ADR-3: i soldi stanno in un posto solo. Spese, Conto tra voi, Compensi e Dashboard
+// erano quattro pagine (due sotto Altro) e il saldo compariva in cinque punti; qui
+// e' UNA pagina con una testata sola — il conto nella voce di chi legge, poi le
+// spese tue, le entrate e il netto dell'anno — e quattro segmenti:
+// Conto · Spese · Compensi · Anno. I CONTI non si toccano: computeSpesa, mioImporto,
+// saldoTot, saldoTrasferta, daPagare e saldoIo sono quelli di prima; e' cambiato
+// solo dove stanno le cose e come sono dette. Le regole (che cosa fa una condivisa,
+// da dove viene il compenso, che cos'e' "da bonificare") sono dietro il "?" (ADR-4).
+let soldiSeg = "conto", soldiAnno = "";
+const SOLDI_SEG = { conto: "Conto", spese: "Spese", compensi: "Compensi", anno: "Anno" };
+function setSoldiSeg(s) { soldiSeg = s; viewArg = s; render(); }
+// Gli anni in cui c'e' qualcosa (spese o entrate), dal piu' recente.
+function anniSoldi() {
+  const ys = new Set(visibleSpese().map(s => String(s.data).slice(0, 4)));
+  entrateTutte().forEach(c => ys.add(c.data.slice(0, 4)));
+  return [...ys].filter(y => /^\d{4}$/.test(y)).sort().reverse();
+}
+function vSoldi() {
+  if (viewArg && SOLDI_SEG[viewArg]) soldiSeg = viewArg;
+  const years = anniSoldi();
+  if (!soldiAnno || !years.includes(soldiAnno)) soldiAnno = years.includes(today().slice(0, 4)) ? today().slice(0, 4) : (years[0] || today().slice(0, 4));
+  const y = soldiAnno, s = saldoTot();
+  // Spese tue = la quota a tuo carico (mioImporto), fuori i compensi e i pagamenti:
+  // e' la stessa somma della lista Spese e della vecchia carta "Spese <chi guarda>".
+  const out = Math.round(mieSpese().filter(x => String(x.data).startsWith(y)).reduce((a, x) => a + mioImporto(x), 0) * 100) / 100;
+  const inc = Math.round(entrateAnno(y).reduce((a, c) => a + c.val, 0) * 100) / 100;
+  const labIn = cfg.who === "Giulio" ? "Compensi" : "Vincite";
+  let h = `<div class="row"><h1 class="grow" style="margin:0">Soldi</h1><button class="btn sm" onclick="soldiAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="scegliAnnoSoldi()">${esc(y)} ▾</button></div>
+    <div class="card head" style="margin-top:12px"><div class="muted">Conto</div><div style="font-weight:700;font-size:19px">${esc(frase(saldoIo(s)))}</div>
+      <div class="kp"><div><b>${eur(out)}</b><span>Spese tue ${esc(y)}</span></div><div><b class="in">${eur(inc)}</b><span>${esc(labIn)} ${esc(y)}</span></div><div><b class="${inc - out < 0 ? "out" : "in"}">${eur(inc - out)}</b><span>Netto ${esc(y)}</span></div></div></div>
+    <div class="seg" style="margin:0 0 12px">${Object.keys(SOLDI_SEG).map(k => `<button class="${soldiSeg === k ? "on" : ""}" onclick="setSoldiSeg('${k}')">${SOLDI_SEG[k]}</button>`).join("")}</div>`;
+  return h + ({ conto: soldiConto, spese: soldiSpese, compensi: soldiCompensi, anno: soldiAnnoSeg }[soldiSeg] || soldiConto)();
+}
+function scegliAnnoSoldi() {
+  const ys = anniSoldi();
+  sceltaFoglietto("Anno", ys.map(y => ({ v: y, lab: y })), soldiAnno, v => { soldiAnno = v; render(); });
+}
+// Le regole della pagina, dietro il "?": erano quattro paragrafi su quattro pagine.
+function soldiAiuto() {
+  const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
+  openModal(`<h2 style="margin-top:0">Come funziona Soldi</h2>
+    <p class="small"><b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista.</p>
+    <p class="small"><b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.</p>
+    <p class="small"><b>Compensi</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.</p>
+    <p class="small"><b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.</p>
+    <button class="btn block" onclick="closeModal()">Chiudi</button>`);
+}
+// Un foglietto con una lista di scelte: e' il "picker" dietro ogni pasticca dei filtri.
+// opz = [{v, lab, n}], cur = il valore acceso, cb(v) alla scelta. Le scelte passano
+// per indice, non per valore: un nome con l'apostrofo dentro un onclick si spaccherebbe.
+let _scelta = null;
+function sceltaFoglietto(titolo, opz, cur, cb) {
+  _scelta = { opz, cb };
+  openModal(`<h2 style="margin-top:0">${esc(titolo)}</h2><div class="card list" style="padding:0 14px">${opz.map((o, i) => { const on = String(o.v) === String(cur); return `<div class="item tap" onclick="closeModal();_scelta.cb(_scelta.opz[${i}].v)"><div class="grow"><b style="${on ? "color:var(--brand)" : ""}">${esc(o.lab)}</b></div>${o.n != null ? `<span class="muted">${esc(o.n)}</span>` : ""}${on ? `<span style="color:var(--brand)">✓</span>` : ""}</div>`; }).join("")}</div>`);
+}
+
+// ---- SOLDI › Spese (lista con filtri)
+// La lista mostra SOLO le spese che compongono "Spese tue" in testa alla pagina:
 // le mie personali + le condivise / ognuno-la-sua (per Giulio la sua quota, per Alessandra
-// l’intero, come mioImporto). Restano fuori le personali dell’altro (già filtrate dal server),
-// i compensi caddie e i pagamenti fra loro due: quelli si vedono in "Conto tra voi".
+// l'intero, come mioImporto). Restano fuori le personali dell'altro (gia' filtrate dal server),
+// i compensi caddie e i pagamenti fra loro due: quelli si vedono nel segmento Conto.
 const mieSpese = () => visibleSpese().filter(s => s.tipo !== "caddie" && s.tipo !== "regolamento" && Math.abs(mioImporto(s)) > 0.004);
-let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "", noScont: false };
-function vSpese() {
+let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "", noScont: false, cerca: false };
+function soldiSpese() {
   const all = mieSpese();
   const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].filter(y => /^\d{4}$/.test(y)).sort().reverse();
   if (!fSp.anno || !years.includes(fSp.anno)) fSp.anno = years[0] || "";
@@ -477,7 +572,7 @@ function vSpese() {
   const catIn = new Set(inAnno.map(s => s.categoria).filter(Boolean));
   const catSet = D.settings.categorie || [];
   const cats = catSet.filter(c => catIn.has(c)).concat([...catIn].filter(c => !catSet.includes(c)).sort());
-  // se un filtro punta a un valore che nell’anno scelto non esiste, lo lascio cadere
+  // se un filtro punta a un valore che nell'anno scelto non esiste, lo lascio cadere
   if (fSp.trip && !trips.includes(fSp.trip)) fSp.trip = "";
   if (fSp.tipo && !tipi.includes(fSp.tipo)) fSp.tipo = "";
   if (fSp.cat && !cats.includes(fSp.cat)) fSp.cat = "";
@@ -488,64 +583,73 @@ function vSpese() {
   const byM = {}; list.forEach(s => { const m = String(s.data).slice(0, 7); byM[m] = Math.round(((byM[m] || 0) + mioImporto(s)) * 100) / 100; });
   const senzaS = list.filter(s => !s.scontrino).length;
   const attivi = (q ? 1 : 0) + (fSp.trip ? 1 : 0) + (fSp.tipo ? 1 : 0) + (fSp.cat ? 1 : 0) + (fSp.noScont ? 1 : 0);
-  const nota = cfg.who === "Giulio"
-    ? "Solo le tue spese, come nella carta \u201cSpese Giulio\u201d: la tua quota delle condivise. Compensi e pagamenti sono in Conto tra voi."
-    : "Solo le tue spese, come nella carta \u201cSpese Alessandra\u201d: le tue e le condivise per intero. Compensi e pagamenti sono in Conto tra voi.";
-  let h = `<h1>Spese</h1>
-    <div class="card fbox">
-      <input class="fq" placeholder="Cerca descrizione, categoria, trasferta\u2026" value="${esc(fSp.q)}" oninput="fSp.q=this.value;render()">
-      <div class="fgrid">
-        <label class="fcell"><span>Anno</span><select onchange="fSp.anno=this.value;render()">${years.length ? years.map(y => `<option ${y === fSp.anno ? "selected" : ""}>${y}</option>`).join("") : `<option value="">\u2014</option>`}</select></label>
-        <label class="fcell"><span>Tipo</span><select onchange="fSp.tipo=this.value;render()"><option value="">Tutti i tipi</option>${tipi.map(k => `<option value="${k}" ${k === fSp.tipo ? "selected" : ""}>${TIPI[k]}</option>`).join("")}</select></label>
-        <label class="fcell"><span>Trasferta</span><select onchange="fSp.trip=this.value;render()"><option value="">Tutte le trasferte</option>${trips.map(t => `<option ${t === fSp.trip ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
-        <label class="fcell"><span>Categoria</span><select onchange="fSp.cat=this.value;render()"><option value="">Tutte le categorie</option>${cats.map(c => `<option ${c === fSp.cat ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
-      </div>
-      <div class="frow">
-        <button class="btn sm ${fSp.noScont ? "primary" : ""}" onclick="fSp.noScont=!fSp.noScont;render()">\ud83e\uddfe Senza scontrino</button>
-        ${attivi ? `<button class="btn sm" onclick="fSp.q='';fSp.trip='';fSp.tipo='';fSp.cat='';fSp.noScont=false;render()">\u2715 Azzera filtri</button>` : ""}
-      </div>
+  // §3.6: i filtri sono UNA riga di pasticche, ognuna apre un foglietto di scelta.
+  // Quante righe ha ogni scelta lo dice il foglietto, cosi' non si sceglie al buio.
+  const conta = f => { const c = {}; inAnno.forEach(s => { const k = f(s); if (k) c[k] = (c[k] || 0) + 1; }); return c; };
+  const chip = (on, lab, fn) => `<button type="button" class="${on ? "on" : ""}" onclick="${fn}">${lab}</button>`;
+  let h = `<div class="chips scroll">
+      ${chip(true, esc(fSp.anno) + " ▾", "filtroSpese('anno')")}
+      ${chip(!!fSp.trip, (fSp.trip ? esc(fSp.trip) : "Trasferta") + " ▾", "filtroSpese('trip')")}
+      ${chip(!!fSp.cat, (fSp.cat ? esc(catBreve(fSp.cat)) : "Categoria") + " ▾", "filtroSpese('cat')")}
+      ${tipi.length > 1 ? chip(!!fSp.tipo, (fSp.tipo ? esc(TIPI[fSp.tipo]) : "Tipo") + " ▾", "filtroSpese('tipo')") : ""}
+      ${chip(fSp.noScont, "🧾 Senza scontrino", "fSp.noScont=!fSp.noScont;render()")}
+      ${chip(fSp.cerca || !!q, "🔍", "fSp.cerca=!fSp.cerca;if(!fSp.cerca)fSp.q='';render()")}
+      ${attivi ? chip(false, "✕ Azzera", "fSp.q='';fSp.trip='';fSp.tipo='';fSp.cat='';fSp.noScont=false;fSp.cerca=false;render()") : ""}
     </div>
-    <div class="row between" style="margin-bottom:2px"><span class="muted">${list.length} spes${list.length === 1 ? "a" : "e"}${senzaS ? ` \u00b7 ${senzaS} senza scontrino` : ""}</span><span class="amt">${eur(tot)}</span></div>
-    <div class="muted small" style="margin-bottom:10px">${nota}</div>`;
+    ${fSp.cerca || q ? `<div class="field" style="margin:8px 0 4px"><input class="fq" placeholder="Cerca descrizione, categoria, trasferta…" value="${esc(fSp.q)}" oninput="fSp.q=this.value;render()" autofocus></div>` : ""}
+    <div class="row between" style="margin:8px 0 2px"><span class="muted">${list.length} spes${list.length === 1 ? "a" : "e"}${senzaS ? ` · ${senzaS} senza scontrino` : ""}</span><span class="amt">${eur(tot)}</span></div>`;
+  // le liste che i foglietti mostrano: si preparano qui, coi conteggi dell'anno scelto
+  const nTrip = conta(s => s.trasferta), nCat = conta(s => s.categoria), nTipo = conta(s => s.tipo);
+  _filtri = {
+    anno: { tit: "Anno", cur: fSp.anno, opz: years.map(y => ({ v: y, lab: y, n: all.filter(s => String(s.data).slice(0, 4) === y).length })), set: v => { fSp.anno = v; } },
+    trip: { tit: "Trasferta", cur: fSp.trip, opz: [{ v: "", lab: "Tutte le trasferte", n: inAnno.length }].concat(trips.map(t => ({ v: t, lab: t, n: nTrip[t] }))), set: v => { fSp.trip = v; } },
+    cat: { tit: "Categoria", cur: fSp.cat, opz: [{ v: "", lab: "Tutte le categorie", n: inAnno.length }].concat(cats.map(c => ({ v: c, lab: catBreve(c), n: nCat[c] }))), set: v => { fSp.cat = v; } },
+    tipo: { tit: "Tipo", cur: fSp.tipo, opz: [{ v: "", lab: "Tutti i tipi", n: inAnno.length }].concat(tipi.map(k => ({ v: k, lab: TIPI[k], n: nTipo[k] }))), set: v => { fSp.tipo = v; } },
+  };
   let lastM = ""; let open = false;
   list.forEach(s => { const m = String(s.data).slice(0, 7); if (m !== lastM) { if (open) h += `</div>`; h += `<div class="month row between"><span>${monthName(m + "-01")}</span><span>${eur(byM[m])}</span></div><div class="card list">`; open = true; lastM = m; } h += itemSpesa(s, true); });
   if (open) h += `</div>`;
   if (!list.length) h += `<div class="empty">Nessuna spesa${attivi ? `<br><span class="small">Prova ad azzerare i filtri</span>` : ""}</div>`;
   return h;
 }
+let _filtri = {};
+function filtroSpese(k) { const f = _filtri[k]; if (!f) return; sceltaFoglietto(f.tit, f.opz, f.cur, v => { f.set(v); render(); }); }
 
-// ---- SALDO
-function vSaldo() {
-  const s = saldoTot();
+// ---- SOLDI › Conto
+// Il saldo per trasferta con "Salda" accanto, poi i movimenti. "Salda" apre il
+// modulo del pagamento con importo e chi paga gia' scritti (quello che faceva
+// kPay dal compenso) e passa il compenso di quella trasferta, se c'e': cosi'
+// dopo il salvataggio la app CHIEDE ancora se segnarlo saldato (T9).
+function soldiConto() {
   const mov = visibleSpese().filter(x => Math.abs(+x.saldo || 0) > 0.004).sort((a, b) => a.data < b.data ? 1 : -1);
-  const byTrip = {}; mov.forEach(x => byTrip[x.trasferta] = (byTrip[x.trasferta] || 0) + (+x.saldo));
-  let h = `<h1>Conto tra voi</h1>
-    <div class="card hero"><div class="muted">Saldo attuale</div><div class="big">${saldoLabel(s)}</div>
-      <div class="muted" style="margin-top:6px">Le spese condivise pagate da uno creano il debito della quota dell'altro; i compensi caddie vanno a credito di Giulio; i pagamenti azzerano.</div></div>
-    <div class="row" style="gap:8px"><button class="btn grow" onclick="go('compensi')">💶 Compensi</button><button class="btn grow primary" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button></div>
-    <h2>Per trasferta</h2><div class="card">${Object.keys(byTrip).sort((a, b) => Math.abs(byTrip[b]) - Math.abs(byTrip[a])).map(k => `<div class="row between" style="padding:6px 0"><span class="ellipsis">${esc(k)}</span><span class="amt" style="color:${byTrip[k] > 0 ? "var(--good)" : "var(--bad)"}">${byTrip[k] > 0 ? "+" : ""}${eur(byTrip[k])}</span></div>`).join("") || `<div class="muted">Nessun movimento</div>`}</div>
-    <h2>Movimenti <span class="muted">(+ = Ale deve a Giulio)</span></h2><div class="card list">${mov.slice(0, 200).map(x => `<div class="item tap" onclick="formSpesa('${x.id}')"><div class="grow"><div class="ellipsis"><b>${esc(x.descrizione)}</b> <span class="pill ${x.tipo === "caddie" ? "warn" : x.tipo === "regolamento" ? "blue" : ""}">${TIPI[x.tipo]}</span></div><div class="muted">${fmtDY(x.data)} · ${esc(x.trasferta)} · ha pagato ${esc(x.pagato_da)}${x.tipo === "condivisa" ? " · tot " + eur(x.importo_eur) + " /" + x.n_persone : ""}</div></div><div class="amt" style="color:${x.saldo > 0 ? "var(--good)" : "var(--bad)"}">${x.saldo > 0 ? "+" : ""}${eur(x.saldo)}</div></div>`).join("")}</div>`;
+  const byTrip = {}; mov.forEach(x => byTrip[x.trasferta] = Math.round(((byTrip[x.trasferta] || 0) + (+x.saldo)) * 100) / 100);
+  const trips = Object.keys(byTrip).filter(k => Math.abs(byTrip[k]) > 0.004).sort((a, b) => Math.abs(byTrip[b]) - Math.abs(byTrip[a]));
+  _contoTrip = trips;
+  let h = `<button class="btn primary block" style="margin:0 0 12px" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button>
+    <h2 style="margin-top:0">Per trasferta</h2><div class="card list">${trips.length ? trips.map((k, i) => `<div class="item"><div class="grow"><div class="ellipsis"><b>${esc(k)}</b></div><div class="muted">${esc(frase(saldoIo(byTrip[k])))}</div></div><button class="btn sm" onclick="saldaTrip(${i})">Salda</button></div>`).join("") : `<div class="muted">Siete pari su ogni trasferta</div>`}</div>
+    <h2>Movimenti</h2><div class="card list">${mov.slice(0, 200).map(x => `<div class="item tap" onclick="formSpesa('${x.id}')"><div class="grow"><div class="ellipsis"><b>${esc(x.descrizione)}</b> <span class="pill ${x.tipo === "caddie" ? "warn" : x.tipo === "regolamento" ? "blue" : ""}">${TIPI[x.tipo]}</span></div><div class="muted">${fmtDY(x.data)} · ${esc(x.trasferta)} · ha pagato ${esc(x.pagato_da)}${x.tipo === "condivisa" ? " · tot " + eur(x.importo_eur) + " ÷" + x.n_persone : ""}</div></div><div class="amt" style="color:${x.saldo > 0 ? "var(--good)" : "var(--bad)"}">${x.saldo > 0 ? "+" : ""}${eur(x.saldo)}</div></div>`).join("") || `<div class="muted">Nessun movimento</div>`}</div>
+    <div class="muted" style="margin-top:6px">+ = a credito di Giulio · − = a credito di Alessandra</div>`;
   return h;
 }
-
-// ---- ALTRO
-function vAltro() {
-  return `<h1>Altro</h1>
-    <div class="card tap" onclick="go('saldo')"><b>⚖️ Conto tra voi</b><div class="muted">${saldoLabel(saldoTot())}</div></div>
-    <div class="card tap" onclick="go('compensi')"><b>💶 Compensi caddie</b><div class="muted">Settimane, montepremi, cosa resta da bonificare</div></div>
-    <div class="card tap" onclick="go('dashboard')"><b>📊 Dashboard</b><div class="muted">Totali per trasferta, categoria e mese</div></div>
-    <div class="card tap" onclick="go('audit')"><b>🔎 Controllo dati</b><div class="muted">${auditRes ? `${(auditRes.trovati || []).length} segnalazioni al controllo del ${fmtDY(auditRes.quando)}` : "Celle rovinate, conti che non tornano, doppioni"}</div></div>
-    <div class="card tap" onclick="go('documenti')"><b>🪪 Documenti</b><div class="muted">Passaporti, licenze, visti, assicurazioni</div></div>
-    <div class="card tap" onclick="go('impostazioni')"><b>⚙️ Impostazioni</b><div class="muted">Categorie, checklist, report per il commercialista</div></div>
-    <div class="card tap" onclick="reload()"><b>🔄 Ricarica dati</b><div class="muted">${queue.length ? queue.length + " modifiche in attesa di invio" : "Tutto sincronizzato"}</div></div>`;
+// Il pagamento che chiude il conto di UNA trasferta: importo = quel saldo, paga chi
+// deve. Il saldo qui comprende anche compenso e pagamenti gia' fatti (e' il conto
+// vero), quindi e' lo stesso numero di "da bonificare" quando c'e' un compenso.
+// Il nome passa per indice (_contoTrip), non dentro l'onclick: un apostrofo lo romperebbe.
+let _contoTrip = [];
+function saldaTrip(i) {
+  const nome = _contoTrip[i]; if (!nome) return;
+  const v = Math.round(visibleSpese().filter(x => x.trasferta === nome).reduce((a, x) => a + (Number(x.saldo) || 0), 0) * 100) / 100;
+  if (Math.abs(v) < 0.005) return toast("Su questa trasferta siete pari");
+  const c = (D.compensi || []).find(k => k.trasferta === nome);
+  formSpesa(null, nome, "regolamento", { importo: Math.abs(v), valuta: "EUR", cambio: 1, pagato_da: v < 0 ? "Giulio" : "Alessandra", descrizione: "Saldo " + nome }, c ? c.id : undefined);
 }
 
-// ---- DASHBOARD
+// ---- SOLDI › Anno (la dashboard)
 // Entrate (guadagni) dell'anno per chi sta guardando:
 //  - Giulio      -> compenso caddie = fisso + % montepremi + extra                   (campo "totale")
 //  - Alessandra  -> montepremi vinto sul LET                                        (campo "montepremi")
 // La data usata e' la fine della trasferta collegata (in mancanza, l'inizio).
-function entrateAnno(y) {
+function entrateTutte() {
   const byId = {}; (D.trasferte || []).forEach(t => byId[t.id] = t);
   return (D.compensi || []).map(c => {
     const t = byId[c.trasferta_id];
@@ -553,8 +657,9 @@ function entrateAnno(y) {
     const data = String((t && (t.fine || t.inizio)) || c.pagato_il || c.creato || "").slice(0, 10);
     const val = Math.round((cfg.who === "Giulio" ? (+c.totale || 0) : (+c.montepremi || 0)) * 100) / 100;
     return { nome, data, val };
-  }).filter(c => c.val > 0 && c.data.startsWith(y));
+  }).filter(c => c.val > 0);
 }
+const entrateAnno = y => entrateTutte().filter(c => c.data.startsWith(y));
 
 // Solo le settimane di gara: tipo "torneo" o "qualifica". Le trasferte senza riga nel
 // tab Trasferte non hanno tipo e restano fuori (creare la scheda dalla pagina Trasferte).
@@ -573,9 +678,13 @@ function speseTeam(y, tipi) {
   return { val: Math.round(ss.reduce((a, s) => a + (+s.importo_eur || 0), 0) * 100) / 100, esatto: false };
 }
 
-function vDashboard() {
-  const all = visibleSpese(); const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].sort().reverse();
-  const y = viewArg || years[0]; const ss = all.filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento");
+// La dashboard di prima, senza la testata (anno e "‹") e senza le quattro carte
+// KPI: spese tue, entrate e netto stanno gia' in testa alla pagina, resta Spese Team,
+// che e' l'unico numero che arriva dal server (teamAnni_) e non si puo' rifare qui.
+// La spiegazione di Spese Team e' dietro il "?".
+function soldiAnnoSeg() {
+  const all = visibleSpese();
+  const y = soldiAnno; const ss = all.filter(s => String(s.data).startsWith(y) && s.tipo !== "regolamento");
   const tipi = tipiTrasferta();
   // USCITE: la quota a carico di chi guarda (stessa regola della pagina trasferta)
   const byTrip = {}, byCat = {}, byMonth = {};
@@ -586,8 +695,6 @@ function vDashboard() {
   // ENTRATE
   const inTrip = {}, inMonth = {}; const ent = entrateAnno(y);
   ent.forEach(c => { inTrip[c.nome] = (inTrip[c.nome] || 0) + c.val; const m = c.data.slice(0, 7); inMonth[m] = (inMonth[m] || 0) + c.val; });
-  const totIn = Math.round(ent.reduce((a, c) => a + c.val, 0) * 100) / 100;
-  const totOut = Math.round(Object.keys(byMonth).reduce((a, m) => a + byMonth[m], 0) * 100) / 100;
   const team = speseTeam(y, tipi);
   const labIn = cfg.who === "Giulio" ? "Compensi caddie" : "Vincite";
   const months = [...new Set(Object.keys(byMonth).concat(Object.keys(inMonth)))].sort();
@@ -598,15 +705,8 @@ function vDashboard() {
   const gare = {}, gareIn = {};
   Object.keys(byTrip).forEach(k => { if (isGara(k, tipi)) gare[k] = byTrip[k]; });
   Object.keys(inTrip).forEach(k => { if (isGara(k, tipi)) gareIn[k] = inTrip[k]; });
-  return `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Dashboard</h1><select onchange="go('dashboard',this.value)">${years.map(yy => `<option ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select></div>
-    <div class="kpis" style="margin-top:12px">
-      <div class="kpi"><div class="v">${eur(team.val)}</div><div class="l">Spese Team ${y}${team.esatto ? "" : ` <span class="muted">(solo visibili)</span>`}</div></div>
-      <div class="kpi"><div class="v">${eur(totOut)}</div><div class="l">Spese ${esc(cfg.who)}</div></div>
-      <div class="kpi"><div class="v in">${eur(totIn)}</div><div class="l">${esc(labIn)} ${y}</div></div>
-      <div class="kpi"><div class="v ${totIn - totOut < 0 ? "out" : "in"}">${eur(totIn - totOut)}</div><div class="l">Netto ${y} <span class="muted">(entrate − spese ${esc(cfg.who)})</span></div></div>
-    </div>
-    <div class="muted small" style="margin:-4px 0 12px">Spese Team: quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno.${team.esatto ? "" : " <b>Per ora somma solo le spese visibili da questa app</b>: mancano le personali dell'altra persona."}</div>
-    ${ent.length ? "" : `<div class="empty">Nessuna entrata registrata per il ${y}. Le entrate si compilano in <b>Compensi caddie</b>: apri la settimana di torneo e inserisci montepremi e risultato.</div>`}
+  return `<div class="card"><div class="row between"><div><div class="kpi-v">${eur(team.val)}</div><div class="muted">Spese Team ${esc(y)} · tornei e qualifiche, importo pieno${team.esatto ? "" : " · <b>solo le spese visibili da questa app</b>"}</div></div></div></div>
+    ${ent.length ? "" : `<div class="empty">Nessuna entrata registrata per il ${esc(y)}. Le entrate si compilano in <b>Compensi</b>: apri la settimana di torneo e inserisci montepremi e risultato.</div>`}
     <h2>Entrate e spese per mese</h2>
     <div class="card">${months.length ? `<div class="mchart">${months.map(m => `<div class="mcol">
         <div class="mbars"><i class="in" style="height:${(inMonth[m] || 0) / mmax * 100}%" title="Entrate ${m}: ${eur(inMonth[m] || 0)}"></i><i class="out" style="height:${(byMonth[m] || 0) / mmax * 100}%" title="Spese ${m}: ${eur(byMonth[m] || 0)}"></i></div>
@@ -634,14 +734,14 @@ function bars2(out, inc) {
 function vDocumenti() {
   const docs = (D.documenti || []).slice().sort((a, b) => (a.persona + a.nome).localeCompare(b.persona + b.nome));
   const soon = d => d.scadenza && (new Date(d.scadenza) - new Date()) / 864e5 < 180;
-  return `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Documenti</h1><button class="btn sm primary" onclick="formDoc()">＋</button></div>
+  return `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Documenti</h1><button class="btn sm primary" onclick="formDoc()">＋</button></div>
     <div class="card list" style="margin-top:12px">${docs.length ? docs.map(d => `<div class="item"><div class="thumb">🪪</div><div class="grow" onclick="formDoc('${d.id}')"><b>${esc(d.nome)}</b> <span class="pill grey">${esc(d.persona)}</span><div class="muted">${d.scadenza ? "Scade " + fmtDY(d.scadenza) : ""}${soon(d) ? ' <span class="pill bad">in scadenza</span>' : ""}${d.note ? " · " + esc(d.note) : ""}</div></div>${d.url ? `<a class="btn sm" href="${esc(d.url)}" target="_blank" rel="noopener">Apri</a>` : ""}</div>`).join("") : `<div class="muted">Nessun documento. Carica passaporti, licenza caddie, visti, assicurazione…</div>`}</div>`;
 }
 
 // ---- IMPOSTAZIONI
 function vImpostazioni() {
   const s = D.settings || {};
-  return `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Impostazioni</h1></div>
+  return `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Impostazioni</h1></div>
     <h2>Report per il commercialista</h2><div class="card"><div class="row" style="gap:8px"><select id="repAnno">${[...new Set((D.spese || []).map(x => String(x.data).slice(0, 4)))].sort().reverse().map(y => `<option>${y}</option>`).join("")}</select><select id="repChi"><option>Alessandra</option><option>Giulio</option></select><button class="btn primary grow" onclick="makeReport()">Genera foglio</button></div><div class="muted" style="margin-top:6px">Crea un Google Sheet con dettaglio + riepilogo per categoria e trasferta.</div></div>
     <h2>Categorie <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setCat" style="width:100%;min-height:160px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc((s.categorie || []).join("\n"))}</textarea></div>
     <h2>Checklist di default <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChk" style="width:100%;min-height:120px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc((s.checklist_template || []).join("\n"))}</textarea></div>
@@ -677,7 +777,7 @@ let auditRes = LS.get("audit", null);
 const GRAV = { alta: ["bad", "Da sistemare"], media: ["warn", "Da guardare"], bassa: ["grey", "Note"] };
 function vAudit() {
   const r = auditRes;
-  let h = `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Controllo dati</h1><button class="btn sm primary" onclick="runAudit()">${r ? "Ripeti" : "Esegui"}</button></div>
+  let h = `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Controllo dati</h1><button class="btn sm primary" onclick="runAudit()">${r ? "Ripeti" : "Esegui"}</button></div>
     <div class="muted small" style="margin:8px 0 12px">Legge tutto il Team DB e segnala celle rovinate dal formato, conti che non tornano, doppioni e righe fuori regola. Non modifica niente.</div>`;
   if (!r) return h + `<div class="empty">Nessun controllo ancora eseguito</div>`;
   const t = r.totali || {}, tr = r.trovati || [], so = r.soppressi || [], righe = r.righe || {};
@@ -757,19 +857,6 @@ function propDiPren(p) {
   return (id && props.find(x => x.id === id)) ||
          (p.msg_id && props.find(x => x.msg_id === p.msg_id)) || null;
 }
-// Il bottone della riga. Tre stati: c'e' una spesa da registrare, c'e' gia' ed
-// e' registrata (si apre per controllarla), oppure quella mail non ha prodotto
-// nessuna proposta e allora non si mostra niente.
-function btnSpesaPren(p) {
-  const q = propDiPren(p);
-  if (!q) return "";
-  if (q.stato === "confermata") {
-    return q.spesa_id
-      ? `<button class="btn sm" onclick="formSpesa('${q.spesa_id}')" title="Spesa gia' registrata: apri per controllarla">\u2713 spesa</button>`
-      : `<button class="btn sm" disabled>\u2713 spesa</button>`;
-  }
-  return `<button class="btn sm primary" onclick="spesaDaPren('${p.id}')" title="Apri la proposta di spesa letta da questa stessa mail">\ud83d\udcb3 Spesa</button>`;
-}
 // Apre la proposta passando la trasferta della prenotazione: se la proposta non
 // ne aveva una (o ne aveva un'altra), quella giusta e' quella appena collegata.
 function spesaDaPren(prenId) {
@@ -829,28 +916,6 @@ function itemPren(p) {
   return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
     ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
     <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
-}
-function vPrenotazioni() {
-  const all = visiblePren().slice().sort((a, b) => a.data_email < b.data_email ? 1 : -1);
-  const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "collegata");
-  const ignorate = all.filter(p => p.stato === "ignorata");
-  const tripName = id => ((D.trasferte || []).find(t => t.id === id) || {}).nome || "";
-  return `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Prenotazioni email</h1><button class="btn sm primary" onclick="scanEmail()">Scansiona</button></div>
-    <div class="muted" style="margin:8px 0 12px">Legge le conferme di voli, hotel, auto e treni dalla Gmail di Giulio (anche quelle inoltrate da Alessandra) ogni 6 ore. "Collega" mette link, codice e date nella voce giusta della checklist.</div>
-    <h2>Da collegare <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.length ? nuove.map(p => { const righe = prenRighe(p); return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
-      ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
-      <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.trasferta_id ? " · " + esc(tripName(p.trasferta_id)) : ' · <span class="pill warn">trasferta?</span>'}</div></div><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button>${btnSpesaPren(p)}<button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`; }).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
-    ${fatte.length ? `<h2>Già collegate</h2><div class="card list">${fatte.slice(0, 30).map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="muted">${esc(tripName(p.trasferta_id))}${p.codice ? " · " + esc(p.codice) : ""}</div>
-      <div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a> · ` : ""}${p.msg_id ? `<a href="${esc(linkMail(p))}" target="_blank" rel="noopener">mail</a>` : ""}${pdfPren(p) ? ` · <a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div></div><div style="display:flex;flex-direction:column;gap:4px">${btnSpesaPren(p)}<button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div></div>`).join("")}</div>
-    <div class="muted" style="margin-top:6px">Il link del fornitore vive qui: serve per il check-in e per cambiare una prenotazione. Sulla voce di checklist ci sono invece la mail e il PDF, che reggono anche senza rete. "Scollega" rimette la prenotazione fra quelle da collegare (la voce di checklist resta dov'è).</div>` : ""}
-    <div class="muted" style="margin-top:10px">\ud83d\udcb3 <b>Spesa</b> compare quando dalla stessa mail è nata anche una proposta di spesa: apre il solito modulo di conferma, dove scegli personale/condivisa/ciascuno e chi ha pagato. Come sempre, in Spese non entra niente finché non premi "Crea la spesa".</div>
-    ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.oggetto)}</div><div class="muted">${esc(p.mittente)}</div></div><button class="btn sm" onclick="ripristinaPren('${p.id}')">Ripristina</button></div>`).join("")}</div>
-    <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui.</div>` : ""}`;
-}
-async function scanEmail() {
-  toast("Leggo la mail… (può volerci un minuto)", 8000);
-  try { const r = await api("email.scan"); D.prenotazioni = r.prenotazioni; LS.set("data", D); render(); toast(r.nuove ? `${r.nuove} nuove prenotazioni trovate` : "Nessuna prenotazione nuova"); }
-  catch (e) { toast("Errore: " + e.message, 5000); }
 }
 // La prenotazione resta in memoria come "ignorata" così puoi ripensarci subito;
 // il server non la rimanda più al prossimo caricamento.
@@ -916,7 +981,6 @@ function offriSpesaDopoCollega(prenId) {
 // Lo script legge dalla posta ricevute e fatture e prepara delle proposte.
 // Niente finisce in Spese finché non premi "Crea la spesa" qui sotto: chi ha
 // pagato e il tipo (personale / condivisa / ciascuno) la mail non può saperli.
-const proposteNuove = () => visibleProp().filter(p => p.stato === "nuova");
 function propNote(p) { try { return JSON.parse(p.note || "null") || {}; } catch (e) { return {}; } }
 // Gli avvisi della carta non diventano mai proposte, ma confermano (o correggono)
 // l'importo letto dalla ricevuta del fornitore.
@@ -956,37 +1020,6 @@ function propImporto(p) {
   const v = Number(p.importo) || 0;
   return (p.valuta && p.valuta !== "EUR") ? num(v) + " " + esc(p.valuta) : eur(v);
 }
-function itemProposta(p) {
-  const n = propNote(p);
-  return `<div class="item"><div class="thumb">${p.allegato ? "🧾" : "💳"}</div>
-    <div class="grow"><div class="ellipsis"><b>${esc(p.vendor || p.descrizione || p.oggetto)}</b></div>
-      <div class="dett">${fmtDY(p.data)} · ${esc(String(p.categoria || "Altro").split(" - ").pop())}${p.trasferta ? " · " + esc(p.trasferta) : ' · <span class="pill warn">trasferta?</span>'}</div>
-      ${rigaCarta(p)}
-      <div class="muted ellipsis">${esc(p.mittente)}${p.file_url ? ` · <a href="${esc(p.file_url)}" target="_blank" rel="noopener">apri il PDF</a>` : n.pdf ? " · PDF non salvato" : ""}</div></div>
-    <div style="text-align:right"><div class="amt">${propImporto(p)}</div>
-      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px"><button class="btn sm primary" onclick="formProposta('${p.id}')">Conferma</button><button class="btn sm" onclick="ignoraProposta('${p.id}')">Ignora</button></div></div></div>`;
-}
-function vProposte() {
-  const all = visibleProp().slice().sort((a, b) => a.data < b.data ? 1 : -1);
-  const nuove = all.filter(p => p.stato === "nuova"), fatte = all.filter(p => p.stato === "confermata");
-  const ignorate = all.filter(p => p.stato === "ignorata");
-  const tot = nuove.reduce((a, p) => a + (p.valuta === "EUR" || !p.valuta ? Number(p.importo) || 0 : 0), 0);
-  return `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Proposte di spesa</h1><button class="btn sm primary" onclick="scanSpese()">Scansiona</button></div>
-    <div class="muted" style="margin:8px 0 12px">Ricevute e fatture lette dalla mail, con il PDF già allegato quando c'è. <b>Nessuna diventa una spesa finché non la confermi tu</b>: chi ha pagato e personale/condivisa/ciascuno li scegli qui.</div>
-    <h2>Da confermare <span class="muted">(${nuove.length}${tot ? " · " + eur(tot) : ""})</span></h2>
-    <div class="card list">${nuove.length ? nuove.map(itemProposta).join("") : `<div class="muted">Niente di nuovo. Premi "Scansiona" per cercare adesso.</div>`}</div>
-    ${fatte.length ? `<h2>Confermate <span class="muted">(${fatte.length})</span></h2><div class="card list">${fatte.slice(0, 20).map(p => `<div class="item tap" onclick="${p.spesa_id ? `formSpesa('${p.spesa_id}')` : ""}"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.vendor || p.descrizione)}</div><div class="muted">${fmtDY(p.data)}${p.trasferta ? " · " + esc(p.trasferta) : ""}</div></div><div class="amt">${propImporto(p)}</div></div>`).join("")}</div>` : ""}
-    ${ignorate.length ? `<h2>Ignorate <span class="muted">(${ignorate.length})</span></h2><div class="card list">${ignorate.slice(0, 20).map(p => `<div class="item"><div class="thumb">✕</div><div class="grow"><div class="ellipsis muted">${esc(p.vendor || p.oggetto)}</div><div class="muted">${fmtDY(p.data)} · ${propImporto(p)}</div></div><button class="btn sm" onclick="ripristinaProposta('${p.id}')">Ripristina</button></div>`).join("")}</div>
-    <div class="muted" style="margin-top:6px">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui (e il PDF messo da parte va nel cestino).</div>` : ""}`;
-}
-async function scanSpese() {
-  toast("Cerco ricevute nella mail… (può volerci un minuto)", 8000);
-  try {
-    const r = await api("spese.scan");
-    D.proposte = r.proposte; LS.set("data", D); render();
-    toast(r.nuove ? `${r.nuove} proposte${r.pdf ? ` · ${r.pdf} PDF salvati` : ""}` : "Nessuna spesa nuova trovata");
-  } catch (e) { toast("Errore: " + e.message, 5000); }
-}
 async function ignoraProposta(id) {
   try {
     await write("proposta.stato", { id, stato: "ignorata" }, d => { const x = (d.proposte || []).find(y => y.id === id); if (x) { x.stato = "ignorata"; x.allegato = ""; x.file_url = ""; } });
@@ -1015,8 +1048,7 @@ async function ripristinaProposta(id) {
 // spesa somiglia a una gia' registrata (T7) — il bottone da un tocco SPARISCE e
 // resta solo "Modifica…", che apre il modulo di sempre.
 //
-// vPrenotazioni e vProposte restano nel file per un giro (le rotte funzionano
-// ancora se un telefono ha in mano un link vecchio); niente ci porta piu'.
+// vPrenotazioni e vProposte, tenute un giro per sicurezza, sono state tolte nel giro 3.
 let postaSeg = "da_fare";
 const POSTA_SEG = { da_fare: "Da fare", fatte: "Fatte", ignorate: "Ignorate" };
 function setPostaSeg(s) { postaSeg = s; render(); }
@@ -1240,26 +1272,25 @@ async function scanPosta() {
 
 // ---------------------------------------------------------------- COMPENSI
 const RIS = { taglio: "Taglio superato", mancato: "Taglio mancato", vittoria: "Vittoria", np: "Non giocato" };
-function vCompensi() {
-  const st = D.settings || {}; const fisso = Number(st.compenso_fisso || 900);
+// ---- SOLDI › Compensi
+// Una riga per settimana di gara: nome · quanto va bonificato · saldato / da saldare.
+// Le quattro righe di aritmetica (fisso + % + extra, piu' il conto della trasferta)
+// stanno nel foglietto che si apre toccando la riga (formCompenso), insieme a
+// "Registra pagamento" con l'importo gia' scritto e il compenso agganciato (T9).
+// "Segna tutti come saldati" non c'e' piu' (Q6): la domanda dopo un pagamento
+// copre il caso vero. Le regole (900 €, 8 %, 10 %) sono dietro il "?".
+function soldiCompensi() {
   const trips = (D.trasferte || []).filter(t => t.tipo !== "casa" && t.tipo !== "altro" && t.fine <= today()).sort((a, b) => a.inizio < b.inizio ? 1 : -1);
   const comp = D.compensi || []; const byTrip = {}; comp.forEach(c => byTrip[c.trasferta_id] = c);
-  const tot = comp.reduce((a, c) => a + (+c.totale || 0), 0), pag = comp.filter(c => c.stato === "pagato").reduce((a, c) => a + (+c.totale || 0), 0);
   const daSaldare = comp.filter(c => c.stato !== "pagato");
   const totDaPagare = Math.round(daSaldare.reduce((a, c) => a + daPagare(c), 0) * 100) / 100;
-  const saldo = saldoTot();
-  let h = `<div class="row"><button class="btn sm" onclick="indietro('altro')">‹</button><h1 class="grow" style="margin:0">Compensi caddie</h1></div>
-    <div class="kpis" style="margin-top:12px"><div class="kpi"><div class="v">${eur(tot)}</div><div class="l">Compensi maturati</div></div><div class="kpi"><div class="v">${eur(tot - pag)}</div><div class="l">Compensi non ancora saldati</div></div><div class="kpi"><div class="v">${eur(totDaPagare)}</div><div class="l">Da bonificare (compensi non saldati, al netto delle spese)</div></div><div class="kpi"><div class="v">${eur(Math.abs(saldo))}</div><div class="l">${saldo > 0 ? "Netto che Alessandra deve a Giulio" : saldo < 0 ? "Netto che Giulio deve ad Alessandra" : "Netto: pari"}</div></div></div>
-    <div class="muted" style="margin-bottom:10px">Regole: ${eur(fisso)} a settimana di torneo · ${st.perc_taglio || 8}% del montepremi con taglio superato · ${st.perc_vittoria || 10}% con vittoria · il 50% delle tratte intercontinentali arriva dal saldo, non dal compenso (quei voli si registrano come spesa <i>condivisa</i>). Il netto tiene conto delle spese condivise e dei pagamenti già registrati.<br>Il <b>compenso</b> resta lordo: è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il saldo delle spese di quella trasferta — un bonifico solo chiude tutti e due.</div>
-    <div class="row" style="gap:8px;margin-bottom:8px"><button class="btn grow" onclick="segnaPagati()">Segna tutti come saldati</button><button class="btn grow primary" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button></div>`;
-  if (!trips.length) h += `<div class="empty">Nessuna settimana di torneo conclusa</div>`;
-  trips.forEach(t => { const c = byTrip[t.id];
-    // st = saldo delle spese della trasferta, dp = quanto va bonificato davvero
-    const st = c ? saldoTrasferta(c.trasferta) : 0, dp = c ? daPagare(c) : 0;
-    h += `<div class="card tap" onclick="formCompenso('${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${t.tipo === "qualifica" ? '<span class="pill grey">qualifica</span>' : ""}${t.intercontinentale === "si" ? '<span class="pill blue">intercont.</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${c ? " · " + RIS[c.risultato] + (c.montepremi ? " · montepremi " + eur(c.montepremi) : "") : ""}</div>
-      ${c ? `<div class="muted">fisso ${eur(c.fisso)}${+c.quota_percentuale ? " + " + c.percentuale + "% = " + eur(c.quota_percentuale) : ""}${+c.rimborso_voli ? " + voli " + eur(c.rimborso_voli) : ""}${+c.extra ? " + extra " + eur(c.extra) : ""}</div>
-      <div class="muted">compenso ${eur(c.totale)} ${st < 0 ? "−" : "+"} ${eur(Math.abs(st))} di saldo trasferta = <b>${eur(Math.abs(dp))}</b> ${dp < 0 ? "che deve Giulio ad Alessandra" : "da bonificare a Giulio"}</div>` : ""}</div>
-      <div style="text-align:right">${c ? `<div class="amt">${eur(Math.abs(dp))}</div><div class="muted" style="font-size:11px;margin:-2px 0 4px">${dp < 0 ? "li deve Giulio" : "da bonificare"}</div><span class="pill ${c.stato === "pagato" ? "" : "warn"}">${c.stato === "pagato" ? "saldato" : "da saldare"}</span>` : `<span class="pill grey">da compilare</span>`}</div></div></div>`; });
+  let h = `<button class="btn primary block" style="margin:0 0 12px" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button>
+    <div class="row between" style="margin-bottom:4px"><span class="muted">${daSaldare.length ? `${daSaldare.length} da saldare` : "Tutti saldati"} · ${comp.length} compens${comp.length === 1 ? "o" : "i"}</span>${daSaldare.length ? `<span class="amt">${eur(totDaPagare)} da bonificare</span>` : ""}</div>`;
+  if (!trips.length) return h + `<div class="empty">Nessuna settimana di torneo conclusa</div>`;
+  h += `<div class="card list">` + trips.map(t => { const c = byTrip[t.id];
+    const dp = c ? daPagare(c) : 0;
+    return `<div class="item tap" onclick="formCompenso('${t.id}')"><div class="grow"><div class="ellipsis"><b>${esc(t.nome)}</b> ${t.tipo === "qualifica" ? '<span class="pill grey">qualifica</span>' : ""}${t.intercontinentale === "si" ? ' <span class="pill blue">intercont.</span>' : ""}</div><div class="muted">${fmtD(t.inizio)} → ${fmtD(t.fine)}${c ? " · " + (RIS[c.risultato] || "").toLowerCase() : ""}</div></div>
+      <div style="text-align:right">${c ? `<div class="amt">${eur(Math.abs(dp))}</div>${dp < 0 ? `<div class="muted">${cfg.who === "Giulio" ? "li devi tu" : "li deve Giulio"}</div>` : ""}<span class="pill ${c.stato === "pagato" ? "" : "warn"}">${c.stato === "pagato" ? "saldato" : "da saldare"}</span>` : `<span class="pill grey">da compilare</span>`}</div></div>`; }).join("") + `</div>`;
   return h;
 }
 function formCompenso(tripId) {
@@ -1298,13 +1329,6 @@ function formCompenso(tripId) {
   });
   if (ex) $("#kDel").addEventListener("click", async () => { if (!confirm("Eliminare questo compenso (e la riga collegata nel saldo)?")) return; closeModal(); try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); } });
 }
-async function segnaPagati() {
-  const ids = (D.compensi || []).filter(c => c.stato !== "pagato").map(c => c.id);
-  if (!ids.length) return toast("Niente da saldare");
-  if (!confirm(`Segnare ${ids.length} compensi come saldati? (Il pagamento vero va registrato con "Registra pagamento")`)) return;
-  try { const r = await api("compenso.stato", { ids, stato: "pagato", data: today() }); r.forEach(c => { const i = D.compensi.findIndex(x => x.id === c.id); if (i >= 0) D.compensi[i] = c; }); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); }
-}
-
 // Chiede se il compenso da cui arriva il pagamento va segnato saldato (T9).
 // Riusa l'azione compenso.stato: nessuna API nuova.
 async function chiediSaldato(compId, data) {
@@ -1555,7 +1579,7 @@ function formSpesa(id, tripName, forceTipo, pre, compId) {
   const s = ex ? Object.assign({}, ex) : Object.assign({ data: today(), trasferta: tripDef, categoria: catDef, descrizione: "", importo: "", valuta: valDef, pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" }, pre || {});
   const isMov = s.tipo === "caddie" || s.tipo === "regolamento";
   moduloSpesa({
-    titolo: `${ex ? "Modifica" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}`,
+    titolo: `${ex ? "Modifica" : s.tipo === "regolamento" ? "Nuovo" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}`,
     s: s, ex: !!ex, conTipo: !isMov, conCategoria: s.tipo !== "regolamento", conNote: true,
     conFile: s.tipo !== "caddie", etichettaFile: s.tipo === "regolamento" ? "Fattura" : "Scontrino",
     notaFile: s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : "",

@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <!-- ?v= : cambiare il numero a OGNI modifica di style.css/app.js (stesso numero di CACHE in sw.js).
      Cambiando l'URL, nessuna cache puo' servire la versione vecchia. -->
-<link rel="stylesheet" href="style.css?v=32">
+<link rel="stylesheet" href="style.css?v=33">
 </head>
 <body>
 <header id="top">
@@ -21,6 +21,8 @@
   <div class="right">
     <span id="netdot" class="dot on" title="online"></span>
     <button id="whoBtn" class="chip"></button>
+    <!-- T10 giro 3: "Altro" non e' piu' un tab, e' l'ingranaggio (e il chip del nome apre lo stesso foglietto) -->
+    <button id="gearBtn" class="chip gear" title="Altro">⚙️</button>
   </div>
 </header>
 
@@ -30,9 +32,8 @@
   <button data-v="oggi"><span>🏠</span>Oggi</button>
   <button data-v="trasferte"><span>🧳</span>Trasferte</button>
   <button data-v="add" class="fab"><span>＋</span></button>
-  <button data-v="spese"><span>🧾</span>Spese</button>
   <button data-v="posta"><span>📬</span>Posta<i id="navBadge" class="badge hidden"></i></button>
-  <button data-v="altro"><span>☰</span>Altro</button>
+  <button data-v="soldi"><span>💶</span>Soldi</button>
 </nav>
 
 <div id="modal" class="modal hidden"><div class="sheet"><div class="grab"></div><div id="modalBody"></div></div></div>
@@ -41,6 +42,6 @@
 <div id="modal2" class="modal hidden"><div class="sheet"><div class="grab"></div><div id="modal2Body"></div></div></div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=32"></script>
+<script src="app.js?v=33"></script>
 </body>
 </html>
