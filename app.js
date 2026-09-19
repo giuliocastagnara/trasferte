@@ -23,8 +23,11 @@ const CATS_COLORS = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
 // ---------------------------------------------------------------- util
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const eur = n => (Number(n) || 0).toLocaleString("it-IT", { style: "currency", currency: "EUR" });
-const num = (n, d = 2) => (Number(n) || 0).toLocaleString("it-IT", { minimumFractionDigits: d, maximumFractionDigits: d });
+// useGrouping:"always" perche' l'italiano, da solo, NON separa le migliaia a
+// quattro cifre: veniva "4918,82 €" accanto a "24.564,11 €". I browser che non
+// conoscono il valore lo leggono come "vero", cioe' si comportano come prima.
+const eur = n => (Number(n) || 0).toLocaleString("it-IT", { style: "currency", currency: "EUR", useGrouping: "always" });
+const num = (n, d = 2) => (Number(n) || 0).toLocaleString("it-IT", { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: "always" });
 const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
 const fmtD = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).split("-"); return `${d}/${m}`; };
 const fmtDY = s => { if (!s) return ""; const [y, m, d] = String(s).slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
@@ -40,19 +43,60 @@ function closeModal() { $("#modal").classList.add("hidden"); }
 // Il foglietto per chiedere una riga di testo, al posto di prompt() (§6 del
 // ticket). Sta su un secondo strato perche' chi lo chiama e' quasi sempre gia'
 // dentro il modulo: aprirlo in #modal spazzerebbe via il modulo a meta'.
+// Chi sta aspettando una risposta dal secondo strato. Serve perche' il foglietto
+// si chiude anche toccando fuori: senza questo, la promessa resterebbe appesa.
+let _m2fine = null;
+function chiudiModal2(v) {
+  const f = _m2fine; _m2fine = null;
+  $("#modal2").classList.add("hidden"); $("#modal2Body").innerHTML = "";
+  if (f) f(v);
+}
 function chiediTesto(titolo, valore, esempio) {
   return new Promise(res => {
     $("#modal2Body").innerHTML = `<h2 style="margin-top:0">${esc(titolo)}</h2>
       <div class="field"><input id="m2in" value="${esc(valore || "")}" placeholder="${esc(esempio || "")}"></div>
       <div class="row" style="gap:8px"><button class="btn primary grow" id="m2ok">Fatto</button><button class="btn" id="m2no">Annulla</button></div>`;
     $("#modal2").classList.remove("hidden");
-    const fine = v => { $("#modal2").classList.add("hidden"); $("#modal2Body").innerHTML = ""; res(v); };
-    $("#m2ok").addEventListener("click", () => fine(String($("#m2in").value || "").trim()));
-    $("#m2no").addEventListener("click", () => fine(null));
+    _m2fine = res;
+    $("#m2ok").addEventListener("click", () => chiudiModal2(String($("#m2in").value || "").trim()));
+    $("#m2no").addEventListener("click", () => chiudiModal2(null));
     setTimeout(() => { const i = $("#m2in"); if (i) i.focus(); }, 60);
   });
 }
+// La stessa domanda di prima, ma nel foglietto che usa tutto il resto della app
+// (T10 giro 5): confirm() era l'ultima finestra di sistema rimasta, e dentro una
+// PWA su iPhone si presenta col nome del sito. Sta sul secondo strato come
+// chiediTesto, perche' chi chiede una conferma e' quasi sempre gia' dentro un
+// modulo. Ritorna una promessa: true = ha detto di si'. `testo` e' HTML gia'
+// messo al sicuro da chi chiama.
+function chiediConferma(titolo, testo, opt) {
+  const o = opt || {};
+  return new Promise(res => {
+    $("#modal2Body").innerHTML = `<h2 style="margin-top:0">${esc(titolo)}</h2>
+      ${testo ? `<p class="small">${testo}</p>` : ""}
+      <div class="row" style="gap:8px"><button class="btn ${o.rosso ? "danger" : "primary"} grow" id="m2si">${esc(o.si || "Sì")}</button><button class="btn" id="m2no">${esc(o.no || "Annulla")}</button></div>`;
+    $("#modal2").classList.remove("hidden");
+    _m2fine = res;
+    $("#m2si").addEventListener("click", () => chiudiModal2(true));
+    $("#m2no").addEventListener("click", () => chiudiModal2(false));
+  });
+}
+// ADR-4: le regole stanno dietro un "?" — e da questo giro il "?" e' UNO SOLO in
+// tutta la app. Posta, Soldi, la trasferta e il modulo spesa passano tutti di
+// qui: stessa faccia, stesso modo di chiuderlo. Se il primo foglietto e' gia'
+// aperto (si sta guardando il modulo) l'aiuto va sul secondo strato, cosi' il
+// modulo a meta' resta dietro.
+function aiutoFoglietto(titolo, pars) {
+  const html = `<h2 style="margin-top:0">${esc(titolo)}</h2>${(pars || []).map(x => `<p class="small">${x}</p>`).join("")}`;
+  if ($("#modal").classList.contains("hidden")) return openModal(html + `<button class="btn block" onclick="closeModal()">Chiudi</button>`);
+  $("#modal2Body").innerHTML = html + `<button class="btn block" id="m2close">Chiudi</button>`;
+  $("#modal2").classList.remove("hidden");
+  _m2fine = null;
+  $("#m2close").addEventListener("click", () => chiudiModal2());
+}
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+// toccare fuori dal foglietto vale "annulla", e chi aspettava riceve la risposta
+$("#modal2").addEventListener("click", e => { if (e.target.id === "modal2") chiudiModal2(null); });
 
 // ---------------------------------------------------------------- API + offline
 async function api(action, payload, { silent } = {}) {
@@ -280,6 +324,8 @@ const ROTTE_VECCHIE = { spese: ["soldi", "spese"], saldo: ["soldi", "conto"], co
 let navBack = [];
 function go(v, arg) {
   if (v === "altro") return apriAltro();
+  // la bozza delle impostazioni si butta uscendo: rientrando si riparte dal foglio
+  if (view === "impostazioni" && v !== "impostazioni") setBozza = null;
   if (ROTTE_VECCHIE[v]) { arg = ROTTE_VECCHIE[v][1]; v = ROTTE_VECCHIE[v][0]; }
   if (v !== view || arg !== viewArg) { navBack.push({ v: view, a: viewArg }); if (navBack.length > 20) navBack.shift(); }
   view = v; viewArg = arg; render();
@@ -294,14 +340,29 @@ document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click"
 // lo stesso foglietto: quello che era il tab "Altro" (§3.1 del ticket).
 $("#whoBtn").addEventListener("click", apriAltro);
 $("#gearBtn").addEventListener("click", apriAltro);
+// L'ingranaggio: le quattro cose che non stanno in un tab. Q7 — Documenti resta,
+// e resta qui: zero righe dopo dieci giorni non vuol dire che non servirà. Note
+// sede sta nella pagina della trasferta, sotto Info: è di una trasferta, non
+// della app. Ogni riga dice a che punto è la cosa che apre, così il foglietto si
+// legge invece di doverlo esplorare.
 function apriAltro() {
   if (!D) return;
-  const riga = (fn, ico, tit, sotto) => `<div class="card tap" style="margin-bottom:8px" onclick="closeModal();${fn}"><div class="row between"><div class="grow"><b>${ico} ${tit}</b><div class="muted">${sotto}</div></div><span>›</span></div></div>`;
+  const riga = (fn, ico, tit, sotto, pill) => `<div class="card tap" style="margin-bottom:8px" onclick="closeModal();${fn}"><div class="row between"><div class="grow"><b>${ico} ${tit}</b><div class="muted">${sotto}</div></div>${pill || ""}<span>›</span></div></div>`;
+  const docs = D.documenti || [];
+  const scad = docs.filter(d => d.scadenza && (new Date(d.scadenza) - new Date()) / 864e5 < 180).length;
+  const seg = auditRes ? (auditRes.trovati || []).length : null;
+  const alta = auditRes ? (auditRes.trovati || []).filter(x => x.gravita === "alta").length : 0;
   openModal(`<div class="row between" style="margin-bottom:10px"><h2 style="margin:0">Altro</h2><span class="muted">collegato come <b>${esc(cfg.who)}</b></span></div>
-    ${riga("go('documenti')", "🪪", "Documenti", "Passaporti, licenze, visti, assicurazioni")}
-    ${riga("go('audit')", "🔎", "Controllo dati", auditRes ? `${(auditRes.trovati || []).length} segnalazioni al controllo del ${fmtDY(auditRes.quando)}` : "Celle rovinate, conti che non tornano, doppioni")}
-    ${riga("go('impostazioni')", "⚙️", "Impostazioni", "Categorie, checklist, report per il commercialista, collegamento")}
-    ${riga("reload()", "🔄", "Ricarica dati", queue.length ? queue.length + " modifiche in attesa di invio" : "Tutto sincronizzato")}`);
+    ${riga("go('documenti')", "🪪", "Documenti",
+      docs.length ? `${docs.length} document${docs.length === 1 ? "o" : "i"}${scad ? ` · ${scad} in scadenza` : ""}` : "Passaporti, licenze, visti, assicurazioni: ancora nessuno",
+      scad ? `<span class="pill warn">${scad}</span>` : "")}
+    ${riga("go('audit')", "🔎", "Controllo dati",
+      seg === null ? "Celle rovinate, conti che non tornano, doppioni" : `${seg === 0 ? "Nessuna segnalazione" : seg + " segnalazion" + (seg === 1 ? "e" : "i")} al controllo del ${fmtDY(auditRes.quando)}`,
+      alta ? `<span class="pill bad">${alta}</span>` : "")}
+    ${riga("go('impostazioni')", "⚙️", "Impostazioni", "Categorie, checklist, valute, report per il commercialista, collegamento")}
+    ${riga("reload()", "🔄", "Ricarica dati",
+      queue.length ? `${queue.length} modific${queue.length === 1 ? "a" : "he"} in attesa di invio` : (navigator.onLine ? "Rilegge tutto dal foglio" : "Senza rete: si rileggerà appena torna"),
+      queue.length ? `<span class="pill warn">${queue.length}</span>` : "")}`);
 }
 
 // ---- setup iniziale
@@ -349,7 +410,7 @@ function vOggi() {
       <div class="row between" style="margin-top:4px"><span>${fmtD(t.inizio)} → ${fmtD(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</span><span class="pill">${esc(t.valuta || "EUR")}</span></div>
       <div class="row between" style="margin-top:10px"><span>Spese tue <b>${eur(tot.mio)}</b></span><span>Checklist <b>${cs.done}/${cs.tot}</b></span></div>
       <div class="muted" style="margin-top:4px">${esc(saldoTripIo(t.nome))}</div>
-      <div class="row acts"><button class="btn grow" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa</button><button class="btn grow" onclick="go('trip','${t.id}')">Checklist${cs.open.length ? ` · ${cs.open.length} da fare` : ""}</button></div>
+      <div class="row acts"><button class="btn grow" onclick="spesaPerTrip('${t.id}')">＋ Spesa</button><button class="btn grow" onclick="go('trip','${t.id}')">Checklist${cs.open.length ? ` · ${cs.open.length} da fare` : ""}</button></div>
     </div>`;
   } else {
     h += `<div class="card"><div class="muted">Nessuna trasferta in corso</div>${nxt ? `<div>Prossima: <b>${esc(nxt.nome)}</b> dal ${fmtDY(nxt.inizio)}</div>` : `<div>Aggiungi la prossima trasferta dalla pagina Trasferte</div>`}</div>`;
@@ -503,7 +564,7 @@ function vTrip() {
   // sui segmenti solo i numeri che vogliono dire "da fare"
   const n = { checklist: cs.open.length, posta: carte.filter(c => c.seg === "da_fare").length };
   const q = quandoTrip(t);
-  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="tripAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
+  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="ask" onclick="tripAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="card head" style="margin-top:12px">
       <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}</div>
       ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
@@ -567,13 +628,13 @@ function tripInfoSeg(t) {
 // Le regole della pagina, dietro il "?" (ADR-4): prima stavano in un paragrafo
 // sotto la checklist.
 function tripAiuto() {
-  openModal(`<h2 style="margin-top:0">Come funziona la trasferta</h2>
-    <p class="small"><b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.</p>
-    <p class="small">Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.</p>
-    <p class="small"><b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.</p>
-    <p class="small"><b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.</p>
-    <p class="small">Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.</p>
-    <button class="btn block" onclick="closeModal()">Chiudi</button>`);
+  aiutoFoglietto("Come funziona la trasferta", [
+    `<b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.`,
+    `Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.`,
+    `<b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.`,
+    `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
+    `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
+  ]);
 }
 
 function bars(obj, total) {
@@ -617,7 +678,7 @@ function vSoldi() {
   const out = Math.round(mieSpese().filter(x => String(x.data).startsWith(y)).reduce((a, x) => a + mioImporto(x), 0) * 100) / 100;
   const inc = Math.round(entrateAnno(y).reduce((a, c) => a + c.val, 0) * 100) / 100;
   const labIn = cfg.who === "Giulio" ? "Compensi" : "Vincite";
-  let h = `<div class="row"><h1 class="grow" style="margin:0">Soldi</h1><button class="btn sm" onclick="soldiAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="scegliAnnoSoldi()">${esc(y)} ▾</button></div>
+  let h = `<div class="row"><h1 class="grow" style="margin:0">Soldi</h1><button class="ask" onclick="soldiAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="scegliAnnoSoldi()">${esc(y)} ▾</button></div>
     <div class="card head" style="margin-top:12px"><div class="muted">Conto</div><div style="font-weight:700;font-size:19px">${esc(frase(saldoIo(s)))}</div>
       <div class="kp"><div><b>${eur(out)}</b><span>Spese tue ${esc(y)}</span></div><div><b class="in">${eur(inc)}</b><span>${esc(labIn)} ${esc(y)}</span></div><div><b class="${inc - out < 0 ? "out" : "in"}">${eur(inc - out)}</b><span>Netto ${esc(y)}</span></div></div></div>
     <div class="seg" style="margin:0 0 12px">${Object.keys(SOLDI_SEG).map(k => `<button class="${soldiSeg === k ? "on" : ""}" onclick="setSoldiSeg('${k}')">${SOLDI_SEG[k]}</button>`).join("")}</div>`;
@@ -630,12 +691,12 @@ function scegliAnnoSoldi() {
 // Le regole della pagina, dietro il "?": erano quattro paragrafi su quattro pagine.
 function soldiAiuto() {
   const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
-  openModal(`<h2 style="margin-top:0">Come funziona Soldi</h2>
-    <p class="small"><b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista.</p>
-    <p class="small"><b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.</p>
-    <p class="small"><b>Compensi</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.</p>
-    <p class="small"><b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.</p>
-    <button class="btn block" onclick="closeModal()">Chiudi</button>`);
+  aiutoFoglietto("Come funziona Soldi", [
+    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista.`,
+    `<b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.`,
+    `<b>Compensi</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.`,
+    `<b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.`,
+  ]);
 }
 // Un foglietto con una lista di scelte: e' il "picker" dietro ogni pasticca dei filtri.
 // opz = [{v, lab, n}], cur = il valore acceso, cb(v) alla scelta. Le scelte passano
@@ -831,18 +892,82 @@ function vDocumenti() {
 }
 
 // ---- IMPOSTAZIONI
+// §3.7: le categorie e le due checklist erano tre riquadri di testo in cui si
+// andava a capo a mano — un a capo di troppo creava una voce vuota, e l'ordine
+// (che è quello in cui le voci compaiono nella checklist di una trasferta nuova)
+// si cambiava solo tagliando e incollando. Adesso sono tre liste con ▲▼ e ✕, e
+// le valute sono pasticche. Si lavora su una BOZZA in memoria: il foglio si
+// scrive solo con "Salva impostazioni", e il payload di settings.save è quello
+// di sempre (categorie, checklist_template_torneo, checklist_template_qualifica,
+// valute).
+let setBozza = null;
+const SET_LISTE = {
+  categorie: { tit: "Categorie", sotto: "Nel modulo spesa le sei pasticche sono le più usate, non le prime sei. Il numero a destra dice quante spese hanno quella categoria.", cosa: "Nuova categoria", esempio: "es. Viaggio - Taxi" },
+  chkT:      { tit: "Checklist per un torneo", sotto: "Le voci con cui nasce una trasferta di tipo torneo, in quest'ordine.", cosa: "Nuova voce", esempio: "es. Volo andata" },
+  chkQ:      { tit: "Checklist per una qualifica", sotto: "Come sopra, per le qualifiche. Casa e Altro nascono senza checklist.", cosa: "Nuova voce", esempio: "es. Iscrizione qualifica" },
+};
+function bozzaImpostazioni() {
+  const s = D.settings || {};
+  return { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice() };
+}
+// Ridisegna senza riportare in cima lo scorrimento: spostare l'ultima voce di
+// quindici con ▲▼, e ritrovarsi ogni volta in testa alla pagina, è inutilizzabile.
+function renderFermo() { const m = document.querySelector("main"), y = m ? m.scrollTop : 0; render(); if (m) m.scrollTop = y; }
+function setLista(k) {
+  const a = setBozza[k], d = SET_LISTE[k], uso = {};
+  if (k === "categorie") (D.spese || []).forEach(x => { const c = String(x.categoria || ""); if (c) uso[c] = (uso[c] || 0) + 1; });
+  return `<h2>${esc(d.tit)}</h2><div class="muted" style="margin:-4px 0 8px">${esc(d.sotto)}</div>
+    <div class="card list setlist">${a.length ? a.map((x, i) => `<div class="item">
+        <div class="grow tap" onclick="setRinomina('${k}',${i})"><b>${esc(x)}</b></div>
+        ${k === "categorie" ? `<span class="muted">${uso[x] || 0}</span>` : ""}
+        <div class="ord"><button class="obtn" ${i === 0 ? "disabled" : ""} onclick="setSposta('${k}',${i},-1)">▲</button><button class="obtn" ${i === a.length - 1 ? "disabled" : ""} onclick="setSposta('${k}',${i},1)">▼</button><button class="obtn" onclick="setTogli('${k}',${i})">✕</button></div>
+      </div>`).join("") : `<div class="muted">Nessuna voce</div>`}</div>
+    <button class="btn block" onclick="setAggiungi('${k}')">＋ ${esc(d.cosa)}</button>`;
+}
+function setSposta(k, i, d) { const a = setBozza[k], j = i + d; if (j < 0 || j >= a.length) return; const t = a[i]; a[i] = a[j]; a[j] = t; renderFermo(); }
+function setTogli(k, i) { setBozza[k].splice(i, 1); renderFermo(); }
+async function setAggiungi(k) {
+  const n = await chiediTesto(SET_LISTE[k].cosa, "", SET_LISTE[k].esempio);
+  if (!n) return;
+  if (setBozza[k].indexOf(n) < 0) setBozza[k].push(n); else toast("C'è già");
+  renderFermo();
+}
+async function setRinomina(k, i) {
+  const vecchia = setBozza[k][i], n = await chiediTesto("Modifica", vecchia, SET_LISTE[k].esempio);
+  if (!n || n === vecchia) return;
+  setBozza[k][i] = n; renderFermo();
+}
+async function setAggiungiVal() {
+  const n = await chiediTesto("Nuova valuta", "", "es. CHF");
+  const v = String(n || "").trim().toUpperCase();
+  if (!v) return;
+  if (setBozza.valute.indexOf(v) < 0) setBozza.valute.push(v); else toast("C'è già");
+  renderFermo();
+}
+function setTogliVal(i) { setBozza.valute.splice(i, 1); renderFermo(); }
 function vImpostazioni() {
   const s = D.settings || {};
-  return `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Impostazioni</h1></div>
+  if (!setBozza) setBozza = bozzaImpostazioni();
+  return `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Impostazioni</h1><button class="ask" onclick="impostazioniAiuto()" title="Come funziona">?</button></div>
     <h2>Report per il commercialista</h2><div class="card"><div class="row" style="gap:8px"><select id="repAnno">${[...new Set((D.spese || []).map(x => String(x.data).slice(0, 4)))].sort().reverse().map(y => `<option>${y}</option>`).join("")}</select><select id="repChi"><option>Alessandra</option><option>Giulio</option></select><button class="btn primary grow" onclick="makeReport()">Genera foglio</button></div><div class="muted" style="margin-top:6px">Crea un Google Sheet con dettaglio + riepilogo per categoria e trasferta.</div></div>
-    <h2>Categorie <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setCat" style="width:100%;min-height:160px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc((s.categorie || []).join("\n"))}</textarea></div>
-    <h2>Checklist per un torneo <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChkT" style="width:100%;min-height:120px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc(templateChecklist("torneo").join("\n"))}</textarea></div>
-    <h2>Checklist per una qualifica <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChkQ" style="width:100%;min-height:90px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc(templateChecklist("qualifica").join("\n"))}</textarea><div class="muted" style="margin-top:6px">Vale per le trasferte nuove. Casa e Altro nascono senza checklist.</div></div>
-    <h2>Valute <span class="muted">(separate da virgola)</span></h2><div class="card"><input id="setVal" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)" value="${esc((s.valute || []).join(", "))}"></div>
+    ${setLista("categorie")}
+    ${setLista("chkT")}
+    ${setLista("chkQ")}
+    <h2>Valute</h2><div class="muted" style="margin:-4px 0 8px">Quelle che si possono scegliere nel modulo spesa, dietro "altre…". Tocca una pasticca per toglierla.</div>
+    <div class="card"><div class="chips">${setBozza.valute.map((v, i) => `<button type="button" onclick="setTogliVal(${i})">${esc(v)} ✕</button>`).join("")}<button type="button" onclick="setAggiungiVal()">＋ Aggiungi</button></div></div>
     <button class="btn primary block" onclick="saveSettings()">Salva impostazioni</button>
+    <div class="muted" style="margin-top:6px">Finché non salvi, le modifiche restano su questo telefono.</div>
     <h2>Collegamento</h2><div class="card">
       <div class="row between"><div class="grow"><b>Collegato come ${esc(cfg.who || "—")}</b><div class="muted">Il token non si vede più in chiaro: per ricollegare l'app si riapre il link personale.</div></div><button class="btn" onclick="scollegaApp()">Scollega</button></div>
       <div class="muted" style="margin-top:8px">Calendario condiviso: ${s.calendar_id ? "attivo" : "non configurato"} · Modifiche in attesa: ${queue.length}</div></div>`;
+}
+function impostazioniAiuto() {
+  aiutoFoglietto("Come funzionano le impostazioni", [
+    `Le tre liste si modificano qui e partono solo con <b>Salva impostazioni</b>: tocca una voce per riscriverla, ▲▼ per spostarla, ✕ per toglierla.`,
+    `Togliere una <b>categoria</b> non tocca le spese già registrate: restano con la loro, e il numero a destra dice quante sono.`,
+    `Le due <b>checklist</b> valgono per le trasferte nuove, non per quelle già create. Casa e Altro nascono senza.`,
+    `<b>Scollega</b> toglie il collegamento da questo telefono soltanto: sul foglio non cambia niente, e per rientrare serve il link personale che hai ricevuto.`,
+  ]);
 }
 // Toglie il collegamento da QUESTO telefono: i dati restano sul foglio, si
 // rientra riaprendo il link personale (che porta con se' indirizzo e token).
@@ -853,10 +978,12 @@ function scollegaApp() {
 }
 function scollegaOra() { closeModal(); cfg.api = ""; cfg.token = ""; LS.set("cfg", cfg); render(); }
 async function saveSettings() {
-  const righe = id => $(id).value.split("\n").map(x => x.trim()).filter(Boolean);
-  // le due liste hanno la loro chiave (Q4); checklist_template resta sul foglio come ripiego del torneo
-  const p = { categorie: righe("#setCat"), checklist_template_torneo: righe("#setChkT"), checklist_template_qualifica: righe("#setChkQ"), valute: $("#setVal").value.split(",").map(x => x.trim().toUpperCase()).filter(Boolean) };
-  await write("settings.save", p, d => Object.assign(d.settings, p)); toast("Impostazioni salvate");
+  const b = setBozza || bozzaImpostazioni();
+  // Stesso payload di sempre. Le due liste hanno la loro chiave (Q4);
+  // checklist_template resta sul foglio come ripiego del torneo.
+  const p = { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice() };
+  await write("settings.save", p, d => Object.assign(d.settings, p));
+  setBozza = null; toast("Impostazioni salvate");
 }
 async function makeReport() {
   toast("Genero il report…", 6000);
@@ -1316,7 +1443,7 @@ function vPosta() {
   carte.forEach(c => n[c.seg]++);
   const daFare = carte.filter(c => c.seg === "da_fare");
   const tot = daFare.reduce((a, c) => a + (c.prop && c.prop.stato === "nuova" && (!c.prop.valuta || c.prop.valuta === "EUR") ? Number(c.prop.importo) || 0 : 0), 0);
-  let h = `<div class="row"><h1 class="grow" style="margin:0">Posta</h1><button class="btn sm" onclick="postaAiuto()" title="Come funziona">?</button><button class="btn sm primary" onclick="scanPosta()">Scansiona</button></div>
+  let h = `<div class="row"><h1 class="grow" style="margin:0">Posta</h1><button class="ask" onclick="postaAiuto()" title="Come funziona">?</button><button class="btn sm primary" onclick="scanPosta()">Scansiona</button></div>
     <div class="seg" style="margin:12px 0">${Object.keys(POSTA_SEG).map(k => `<button class="${postaSeg === k ? "on" : ""}" onclick="setPostaSeg('${k}')">${POSTA_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
   if (postaSeg === "da_fare" && daFare.length) h += `<div class="muted" style="margin:-4px 0 10px">${daFare.length} cos${daFare.length === 1 ? "a" : "e"} da sistemare${tot ? " · " + eur(tot) + " di ricevute" : ""}</div>`;
   const lista = carte.filter(c => c.seg === postaSeg);
@@ -1330,12 +1457,12 @@ function vPosta() {
   return h;
 }
 function postaAiuto() {
-  openModal(`<h2 style="margin-top:0">Come funziona la Posta</h2>
-    <p class="small">Ogni carta è <b>una mail</b> letta dalla tua casella, comprese quelle inoltrate. Dalla stessa mail possono nascere due cose: una <b>prenotazione</b> da collegare a una voce della checklist e una <b>ricevuta</b> da registrare fra le spese. Sono due decisioni diverse, quindi due bottoni.</p>
-    <p class="small">Il bottone verde fa la cosa più probabile in un tocco e dice per esteso che cosa farà. Per le ricevute i valori sono quelli con cui si apre il modulo: <b>condivisa</b>, in due, ha pagato ${esc(cfg.who)}. Se non tornano, "Modifica…" apre il modulo di sempre.</p>
-    <p class="small">In Spese non entra niente senza un tuo tocco su quella ricevuta: nemmeno il bottone verde salta questo passaggio. Se rileggendo la mail l'importo cambia, o se la spesa somiglia a una già registrata, il bottone verde non compare.</p>
-    <p class="small">La posta è di chi la riceve: le mail dell'altra persona non si vedono e non si confermano.</p>
-    <button class="btn block" onclick="closeModal()">Chiudi</button>`);
+  aiutoFoglietto("Come funziona la Posta", [
+    `Ogni carta è <b>una mail</b> letta dalla tua casella, comprese quelle inoltrate. Dalla stessa mail possono nascere due cose: una <b>prenotazione</b> da collegare a una voce della checklist e una <b>ricevuta</b> da registrare fra le spese. Sono due decisioni diverse, quindi due bottoni.`,
+    `Il bottone verde fa la cosa più probabile in un tocco e dice per esteso che cosa farà. Per le ricevute i valori sono quelli con cui si apre il modulo: <b>condivisa</b>, in due, ha pagato ${esc(cfg.who)}. Se non tornano, "Modifica…" apre il modulo di sempre.`,
+    `In Spese non entra niente senza un tuo tocco su quella ricevuta: nemmeno il bottone verde salta questo passaggio. Se rileggendo la mail l'importo cambia, o se la spesa somiglia a una già registrata, il bottone verde non compare.`,
+    `La posta è di chi la riceve: le mail dell'altra persona non si vedono e non si confermano.`,
+  ]);
 }
 // Una passata sola sulla casella: l'azione `scan` produce entrambi gli sbocchi.
 async function scanPosta() {
@@ -1407,15 +1534,14 @@ function formCompenso(tripId) {
     try { const r = await api("compenso.save", c); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); render(); toast("Compenso salvato: " + eur(r.compenso.totale)); }
     catch (e) { toast("Errore: " + e.message, 4000); }
   });
-  if (ex) $("#kDel").addEventListener("click", async () => { if (!confirm("Eliminare questo compenso (e la riga collegata nel saldo)?")) return; closeModal(); try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); } });
+  if (ex) $("#kDel").addEventListener("click", async () => { if (!await chiediConferma("Eliminare il compenso?", `Sparisce anche la riga <b>${esc(ex.trasferta || "")}</b> nel conto, e con lei il credito di quella settimana.`, { si: "Elimina", rosso: true })) return; closeModal(); try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); } });
 }
 // Chiede se il compenso da cui arriva il pagamento va segnato saldato (T9).
 // Riusa l'azione compenso.stato: nessuna API nuova.
 async function chiediSaldato(compId, data) {
   const c = (D.compensi || []).find(x => x.id === compId);
   if (!c || c.stato === "pagato") return;
-  if (!confirm(`Pagamento registrato. Segnare anche il compenso "${c.trasferta}" come saldato?
-(Se era solo un acconto, rispondi No.)`)) return;
+  if (!await chiediConferma("Segnare il compenso come saldato?", `Pagamento registrato. Il compenso di <b>${esc(c.trasferta)}</b> risulterebbe saldato. Se era solo un acconto, rispondi No.`, { si: "Sì, saldato", no: "No" })) return;
   try { const r = await api("compenso.stato", { ids: [compId], stato: "pagato", data: data || today() }); r.forEach(x => { const i = D.compensi.findIndex(y => y.id === x.id); if (i >= 0) D.compensi[i] = x; }); LS.set("data", D); render(); toast("Compenso segnato come saldato"); }
   catch (e) { toast("Errore: " + e.message, 4000); }
 }
@@ -1508,7 +1634,7 @@ function moduloSpesa(o) {
   const TIPO_BTN = { condivisa: ["Condivisa", "una la paga, la dividete"], ciascuno: ["Ognuno la sua", "avete già pagato metà ciascuno"], personale: ["Personale", "solo tua"] };
   pendingFile = null;
   openModal(`
-    <h2 style="margin-top:0">${esc(o.titolo)}</h2>
+    <div class="row between" style="margin-bottom:10px"><h2 style="margin:0">${esc(o.titolo)}</h2><button type="button" class="ask" id="fAsk" title="Come funziona">?</button></div>
     ${o.testa || ""}
     <div class="field"><label>Importo</label>
       <div class="improw"><input id="fImp" class="impbig" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"><span class="impval" id="fValLab">${esc(v0)}</span></div>
@@ -1521,7 +1647,6 @@ function moduloSpesa(o) {
         <select id="fNP" class="altre" hidden>${nMenu.map(n => `<option value="${n}" ${+s.n_persone === n ? "selected" : ""}>in ${n} parti</option>`).join("")}<option value="__x">un altro numero…</option></select>
         <input id="fNPX" class="altre" type="number" inputmode="numeric" min="2" step="1" placeholder="in quante parti" hidden></div></div>` : ""}
     <div class="books" id="fBooks"></div>
-    <details class="spiega"><summary>?</summary>${(conTipo ? ["condivisa", "ciascuno", "personale"] : [s.tipo]).map(k => `<p><b>${esc(TIPI[k] || k)}</b> — ${esc(TIPO_NOTA[k] || "")}</p>`).join("")}${o.aiuto ? `<p>${esc(o.aiuto)}</p>` : ""}</details>
     <div class="field"><label>${s.tipo === "regolamento" ? "Chi paga" : "Chi ha pagato"}</label><div class="seg" id="segChi">${PERSONE.map(p => `<button type="button" data-v="${p}" class="${s.pagato_da === p ? "on" : ""}">${p}${cfg.who === p ? " (tu)" : ""}</button>`).join("")}</div></div>
     <div class="field"><label>Trasferta</label><select id="fTrip">${s.trasferta ? "" : `<option value="" selected>Scegli la trasferta…</option>`}${trips.map(t => `<option ${t === s.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}<option value="__new">＋ Nuova…</option></select></div>
     ${conCat ? `<div class="field"><label>Categoria</label>
@@ -1539,6 +1664,13 @@ function moduloSpesa(o) {
     <div class="formfoot"><div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">${esc(o.salva)}</button>${o.onElimina ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div></div>`);
 
   // --- interruttori ---
+  // Il "?" e' quello di tutte le altre pagine (T10 giro 5): prima qui dentro era
+  // un <details> aperto sul posto, l'unico rimasto diverso dagli altri.
+  const bAsk = $("#fAsk");
+  if (bAsk) bAsk.addEventListener("click", () => aiutoFoglietto(conTipo ? "Che cosa fa questa spesa" : `Che cos'è un ${String(TIPI[s.tipo] || "").toLowerCase()}`,
+    (conTipo ? ["condivisa", "ciascuno", "personale"] : [s.tipo]).map(k => `<b>${esc(TIPI[k] || k)}</b> — ${esc(TIPO_NOTA[k] || "")}`)
+      .concat(o.aiuto ? [esc(o.aiuto)] : [])
+      .concat([`La riga verde qui sopra dice, con i numeri che hai scritto, dove finisce questa spesa e che debito nasce. Se somiglia a una già registrata, il primo tocco su Salva avvisa e il secondo salva lo stesso.`])));
   const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
   // Le pasticche hanno in fondo "altre...", che non si accende: apre il menu completo.
   const chips = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.altre) return cb(null); el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
@@ -1584,9 +1716,25 @@ function moduloSpesa(o) {
     setN(selNP.value);
   });
   const inNP = $("#fNPX"); if (inNP) inNP.addEventListener("input", () => setN(inNP.value));
-  chips("#fChipVal", v => { const sel = $("#fVal"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; const l = $("#fValLab"); if (l) l.textContent = v; prev().then(updBooks); });
+  // La valuta si leggeva solo all'apertura: cambiando la trasferta dentro al
+  // modulo restava quella di prima (dollari su una settimana in euro). Adesso
+  // segue la trasferta — ma solo finche' non l'hai scelta tu, e mai su una
+  // spesa gia' salvata, dove la valuta e' un dato, non un default.
+  let valTocco = !!o.ex;
+  const accendiVal = v => { const c = $("#fChipVal"); if (c) c.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); };
+  const valutaDaTrip = () => {
+    if (valTocco) return;
+    const sel = $("#fVal"), t = (D.trasferte || []).find(x => x.nome === s.trasferta), v = t && t.valuta;
+    if (!sel || !v || v === sel.value) return;
+    if (!Array.prototype.some.call(sel.options, op => op.value === v)) sel.insertAdjacentHTML("afterbegin", `<option>${esc(v)}</option>`);
+    sel.value = v; s.valuta = v;
+    const l = $("#fValLab"); if (l) l.textContent = v;
+    accendiVal(v); toast("Valuta della trasferta: " + v);
+    prev().then(updBooks);
+  };
+  chips("#fChipVal", v => { const sel = $("#fVal"); if (!sel) return; if (v === null) { sel.hidden = false; return; } valTocco = true; sel.value = v; const l = $("#fValLab"); if (l) l.textContent = v; prev().then(updBooks); });
   chips("#fChipCat", v => { const sel = $("#fCat"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; s.categoria = v; updSugg(); });
-  const selVal = $("#fVal"); if (selVal) selVal.addEventListener("change", () => { const l = $("#fValLab"); if (l) l.textContent = selVal.value; prev().then(updBooks); });
+  const selVal = $("#fVal"); if (selVal) selVal.addEventListener("change", () => { valTocco = true; accendiVal(selVal.value); const l = $("#fValLab"); if (l) l.textContent = selVal.value; prev().then(updBooks); });
   const selCat = $("#fCat"); if (selCat) selCat.addEventListener("change", () => { s.categoria = selCat.value; updSugg(); });
   const inDesc = $("#fDesc"); if (inDesc) inDesc.addEventListener("input", updSugg);
   const elSugg = $("#fSugg"); if (elSugg) elSugg.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; const d = suggOra[+b.dataset.i]; if (d == null) return; $("#fDesc").value = d; updSugg(); });
@@ -1596,12 +1744,12 @@ function moduloSpesa(o) {
   // che usa tutto il resto della app (§6 del ticket).
   const selTrip = $("#fTrip");
   selTrip.addEventListener("change", async () => {
-    if (selTrip.value !== "__new") { s.trasferta = selTrip.value; return; }
+    if (selTrip.value !== "__new") { s.trasferta = selTrip.value; valutaDaTrip(); return; }
     selTrip.value = s.trasferta || "";
     const n = await chiediTesto("Nuova trasferta", "", "es. Dutch Ladies Open");
     if (!n) return;
     selTrip.insertAdjacentHTML("afterbegin", `<option>${esc(n)}</option>`);
-    selTrip.value = n; s.trasferta = n;
+    selTrip.value = n; s.trasferta = n; valutaDaTrip();
   });
   ["#fImp", "#fData"].forEach(x => { const el = $(x); if (el) el.addEventListener("change", () => prev().then(updBooks)); });
   if (v0 !== "EUR") prev().then(updBooks);
@@ -1664,7 +1812,7 @@ function formSpesa(id, tripName, forceTipo, pre, compId) {
     conFile: s.tipo !== "caddie", etichettaFile: s.tipo === "regolamento" ? "Fattura" : "Scontrino",
     notaFile: s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : "",
     salva: "Salva", salvaComunque: "Salva comunque",
-    onElimina: ex ? (async () => { if (!confirm("Eliminare questa spesa?")) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); }); }) : null,
+    onElimina: ex ? (async () => { if (!await chiediConferma("Eliminare questa spesa?", "Sparisce la riga dal foglio. Lo scontrino resta su Drive.", { si: "Elimina", rosso: true })) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); }); }) : null,
     onSalva: async (s) => {
       if (!s.id) { s.id = uid(); s.creato = new Date().toISOString().slice(0, 19); s.inserito_da = cfg.who; }
       s.modificato = new Date().toISOString().slice(0, 19);
@@ -1755,7 +1903,12 @@ function formTrip(id, preset) {
     if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); render(); }
   });
 }
-async function delTrip(id) { if (!confirm("Eliminare la trasferta e la sua checklist? Le spese restano.")) return; await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); }); go("trasferte"); }
+async function delTrip(id) {
+  const t = (D.trasferte || []).find(x => x.id === id);
+  if (!await chiediConferma("Eliminare la trasferta?", `${t ? "<b>" + esc(t.nome) + "</b> e la sua" : "La scheda e la"} checklist spariscono, e con loro l'evento nel calendario. <b>Le spese restano</b>: sono legate al nome, e la trasferta tornerà nell'elenco come carta tratteggiata, senza scheda.`, { si: "Elimina", rosso: true })) return;
+  await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); });
+  go("trasferte");
+}
 function duplicaTrip(id) {
   const t = (D.trasferte || []).find(x => x.id === id); if (!t) return;
   const shift = s => { const d = new Date(s + "T00:00:00"); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
@@ -1856,7 +2009,7 @@ function formDoc(id) {
     const res = await write("doc.save", payload, x => { const i = x.documenti.findIndex(y => y.id === d.id); if (i >= 0) x.documenti[i] = d; else x.documenti.push(d); });
     if (res) { const i = D.documenti.findIndex(y => y.id === res.id); if (i >= 0) D.documenti[i] = res; LS.set("data", D); render(); }
   });
-  if (ex) $("#dDel").addEventListener("click", async () => { if (!confirm("Eliminare?")) return; closeModal(); await write("doc.del", { id: ex.id }, x => { x.documenti = x.documenti.filter(y => y.id !== ex.id); }); });
+  if (ex) $("#dDel").addEventListener("click", async () => { if (!await chiediConferma("Eliminare il documento?", `<b>${esc(ex.nome)}</b> sparisce dall'elenco. Il file su Drive resta dov'è.`, { si: "Elimina", rosso: true })) return; closeModal(); await write("doc.del", { id: ex.id }, x => { x.documenti = x.documenti.filter(y => y.id !== ex.id); }); });
 }
 
 // ---------------------------------------------------------------- avvio

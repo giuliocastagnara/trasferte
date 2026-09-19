@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <!-- ?v= : cambiare il numero a OGNI modifica di style.css/app.js (stesso numero di CACHE in sw.js).
      Cambiando l'URL, nessuna cache puo' servire la versione vecchia. -->
-<link rel="stylesheet" href="style.css?v=34">
+<link rel="stylesheet" href="style.css?v=35">
 </head>
 <body>
 <header id="top">
@@ -37,11 +37,12 @@
 </nav>
 
 <div id="modal" class="modal hidden"><div class="sheet"><div class="grab"></div><div id="modalBody"></div></div></div>
-<!-- secondo strato: serve a chiediTesto(), chiamato quasi sempre da DENTRO il
-     modulo (il nome di una trasferta nuova). Un solo strato lo cancellerebbe. -->
+<!-- secondo strato: chiediTesto(), chiediConferma() e il foglietto d'aiuto aperto
+     da dentro il modulo. Chi li chiama e' quasi sempre gia' dentro il modulo (il
+     nome di una trasferta nuova, Elimina, il "?"): un solo strato lo cancellerebbe. -->
 <div id="modal2" class="modal hidden"><div class="sheet"><div class="grab"></div><div id="modal2Body"></div></div></div>
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=34"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>

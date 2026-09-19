@@ -142,11 +142,10 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .tipi b{display:block;font-size:15px}
 .tipi span{display:block;font-size:12.5px;color:var(--ink2)}
 .tipi button.on b,.tipi button.on span{color:var(--brand)}
-/* ADR-4: le regole non stanno nella pagina, stanno dietro un "?" */
-.spiega{margin:0 0 12px}
-.spiega>summary{list-style:none;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--ink2);font-size:14px;font-weight:700;cursor:pointer}
-.spiega>summary::-webkit-details-marker{display:none}
-.spiega p{font-size:12.5px;line-height:1.4;color:var(--ink2);margin:8px 0 0}
+/* ADR-4: le regole non stanno nella pagina, stanno dietro un "?" — e dal giro 5
+   il "?" del modulo spesa è lo stesso foglietto delle altre pagine (aiutoFoglietto),
+   non piu' un <details> che si apriva sul posto. Qui resta solo il bottoncino. */
+.ask{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--ink2);font-size:15px;font-weight:700;cursor:pointer}
 /* data e note, chiuse finche' non servono */
 details.altro{border-top:1px solid var(--line);margin:4px 0 12px;padding-top:8px}
 details.altro>summary{list-style:none;font-size:14px;font-weight:600;color:var(--ink2);cursor:pointer;padding:6px 0}
@@ -164,8 +163,17 @@ details.altro .field{margin-top:8px}
 /* [hidden] della UA perde contro .row{display:flex}: il ÷2 ÷3 ÷4 restava a
    video anche su una spesa personale. Vale per tutta la app, non solo qui. */
 [hidden]{display:none!important}
-/* il secondo foglietto (chiediTesto) sta sopra il primo */
+/* il secondo foglietto (chiediTesto, chiediConferma, l'aiuto aperto da dentro un
+   modulo) sta sopra il primo */
 #modal2{z-index:26}
+
+/* Impostazioni (T10 giro 5, §3.7): categorie e checklist come liste con ▲▼ ✕.
+   I tasti sono quelli dell'ordine della checklist, stretti: su una riga ce ne
+   stanno tre accanto al nome anche a 375px. */
+.setlist .ord{gap:6px}
+.setlist .obtn{width:36px;height:34px}
+.setlist .item{gap:8px}
+.setlist .item b{font-size:14.5px;line-height:1.25;overflow-wrap:anywhere}
 
 /* Posta (T10): i bottoni in fondo alla carta di una mail. Il bottone da un
    tocco dice per esteso che cosa fara', quindi va a capo e si allinea a sinistra. */
