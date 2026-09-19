@@ -57,7 +57,6 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .field input[type=date]{display:block;-webkit-min-logical-width:calc(100% - 24px)}
 .field textarea{min-height:70px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.cols3{display:grid;grid-template-columns:2fr 1fr;gap:10px}
 .seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:3px;gap:3px;flex-wrap:wrap}
 .seg button{flex:1 1 0;border:0;background:none;padding:8px 4px;border-radius:9px;font-size:14px;color:var(--ink2);min-width:0;line-height:1.2}
 .seg button.on{background:var(--card);color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
@@ -128,14 +127,53 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .fcell select{width:100%;max-width:100%;box-sizing:border-box;padding:9px 8px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;font-family:inherit;text-overflow:ellipsis}
 .frow{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 
-/* riquadro "che cosa fa questa spesa": dove finisce l'importo e che debito nasce */
-.books{background:var(--brand-soft);border:1px solid #cfe5da;border-radius:var(--radius);padding:12px 14px;margin:14px 0 12px}
-.books .bhead{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--brand);margin-bottom:8px}
-.books .brow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:4px 0;border-bottom:1px solid rgba(31,111,74,.13)}
-.books .brow:last-of-type{border-bottom:0}
-.books .brow span{font-size:13px;color:var(--ink2)}
-.books .brow b{font-size:14px;font-variant-numeric:tabular-nums;text-align:right}
-.books .bnote{margin:8px 0 0;font-size:12.5px;line-height:1.4;color:var(--ink2)}
+/* "che cosa fa questa spesa": dove finisce l'importo e che debito nasce.
+   T10 giro 2: era un riquadro di quattro righe piu' un paragrafo, ora e' una riga sola. */
+.books{background:var(--brand-soft);border:1px solid #cfe5da;border-radius:var(--radius);padding:10px 12px;margin:10px 0 8px;font-size:13.5px;line-height:1.35;color:var(--ink2);font-variant-numeric:tabular-nums}
+.books b{color:var(--brand)}
+
+/* --- modulo spesa (T10 giro 2) --- */
+/* importo grande, con la valuta scelta scritta dentro il campo */
+.improw{position:relative}
+.improw .impbig{font-size:28px;font-weight:700;letter-spacing:-.5px;min-height:58px;padding-right:64px;font-variant-numeric:tabular-nums}
+.improw .impval{position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:14px;font-weight:700;color:var(--muted)}
+/* pasticche: valute, categorie, ÷2 ÷3 ÷4, suggerimenti della descrizione */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chips button{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:7px 12px;font-size:14px;color:var(--ink2);cursor:pointer;line-height:1.2}
+.chips button.on{background:var(--brand-soft);border-color:var(--brand);color:var(--brand);font-weight:600}
+.chips.inline{margin-top:0}
+.row.split{margin-top:10px;gap:8px}
+/* il tipo: tre bottoni grandi, ognuno dice che cosa vuol dire */
+.tipi{display:flex;flex-direction:column;gap:8px}
+.tipi button{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:9px 14px;cursor:pointer}
+.tipi button.on{border-color:var(--brand);background:var(--brand-soft);box-shadow:inset 0 0 0 1px var(--brand)}
+.tipi b{display:block;font-size:15px}
+.tipi span{display:block;font-size:12.5px;color:var(--ink2)}
+.tipi button.on b,.tipi button.on span{color:var(--brand)}
+/* ADR-4: le regole non stanno nella pagina, stanno dietro un "?" */
+.spiega{margin:0 0 12px}
+.spiega>summary{list-style:none;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--ink2);font-size:14px;font-weight:700;cursor:pointer}
+.spiega>summary::-webkit-details-marker{display:none}
+.spiega p{font-size:12.5px;line-height:1.4;color:var(--ink2);margin:8px 0 0}
+/* data e note, chiuse finche' non servono */
+details.altro{border-top:1px solid var(--line);margin:4px 0 12px;padding-top:8px}
+details.altro>summary{list-style:none;font-size:14px;font-weight:600;color:var(--ink2);cursor:pointer;padding:6px 0}
+details.altro>summary::-webkit-details-marker{display:none}
+details.altro>summary::after{content:" \25be"}
+details.altro[open]>summary::after{content:" \25b4"}
+details.altro .field{margin-top:8px}
+/* Salva appiccicato in fondo al foglietto: non finisce mai sotto la piega.
+   ⚠ `bottom:0` aggancia al bordo del CONTENUTO, non a quello del foglietto: fra
+   i due c'e' il padding di .sheet, e da quella fessura si vedeva scorrere il
+   modulo sotto il bottone. Il margine negativo (stessa misura del padding) fa
+   arrivare la striscia fino ai tre bordi veri. */
+.formfoot{position:sticky;bottom:calc(-24px - env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line);z-index:3;
+  margin:4px -16px calc(-24px - env(safe-area-inset-bottom));padding:10px 16px calc(24px + env(safe-area-inset-bottom))}
+/* [hidden] della UA perde contro .row{display:flex}: il ÷2 ÷3 ÷4 restava a
+   video anche su una spesa personale. Vale per tutta la app, non solo qui. */
+[hidden]{display:none!important}
+/* il secondo foglietto (chiediTesto) sta sopra il primo */
+#modal2{z-index:26}
 
 /* Posta (T10): i bottoni in fondo alla carta di una mail. Il bottone da un
    tocco dice per esteso che cosa fara', quindi va a capo e si allinea a sinistra. */

@@ -33,6 +33,21 @@ const baseName = n => String(n || "").replace(/\b20\d\d\b/g, "").replace(/\s+/g,
 function toast(m, ms = 2200) { const t = $("#toast"); t.textContent = m; t.classList.remove("hidden"); clearTimeout(t._t); t._t = setTimeout(() => t.classList.add("hidden"), ms); }
 function openModal(html) { $("#modalBody").innerHTML = html; $("#modal").classList.remove("hidden"); $("#modal .sheet").scrollTop = 0; }
 function closeModal() { $("#modal").classList.add("hidden"); }
+// Il foglietto per chiedere una riga di testo, al posto di prompt() (§6 del
+// ticket). Sta su un secondo strato perche' chi lo chiama e' quasi sempre gia'
+// dentro il modulo: aprirlo in #modal spazzerebbe via il modulo a meta'.
+function chiediTesto(titolo, valore, esempio) {
+  return new Promise(res => {
+    $("#modal2Body").innerHTML = `<h2 style="margin-top:0">${esc(titolo)}</h2>
+      <div class="field"><input id="m2in" value="${esc(valore || "")}" placeholder="${esc(esempio || "")}"></div>
+      <div class="row" style="gap:8px"><button class="btn primary grow" id="m2ok">Fatto</button><button class="btn" id="m2no">Annulla</button></div>`;
+    $("#modal2").classList.remove("hidden");
+    const fine = v => { $("#modal2").classList.add("hidden"); $("#modal2Body").innerHTML = ""; res(v); };
+    $("#m2ok").addEventListener("click", () => fine(String($("#m2in").value || "").trim()));
+    $("#m2no").addEventListener("click", () => fine(null));
+    setTimeout(() => { const i = $("#m2in"); if (i) i.focus(); }, 60);
+  });
+}
 $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
 
 // ---------------------------------------------------------------- API + offline
@@ -198,18 +213,21 @@ function saldoIo(v) {
   return cfg.who === creditore ? `${debitore} ti deve ${q}` : `devi ${a} ${creditore} ${q}`;
 }
 // eurImp = importo GIA' convertito in euro (0 se non si sa ancora il cambio).
+// T10 giro 2: il riquadro era quattro righe piu' un paragrafo, adesso e' UNA riga
+// ("Alessandra scarica 50 €, tu 25 € · Alessandra ti deve 25 €") e il paragrafo
+// (TIPO_NOTA) e' finito dietro il "?" del modulo. I CONTI non si toccano: la riga
+// la produce sempre computeSpesa, con la voce di saldoIo.
 function boxLibri(s, eurImp) {
   const noto = (Number(eurImp) || 0) > 0;
   const c = computeSpesa({ importo_eur: Number(eurImp) || 0, n_persone: s.n_persone, tipo: s.tipo,
                            pagato_da: s.pagato_da, conto: s.tipo === "personale" ? (s.conto || cfg.who) : "" });
-  const riga = (lab, val) => `<div class="brow"><span>${lab}</span><b>${noto ? eur(val) : "\u2014"}</b></div>`;
-  const mio = p => p + (cfg.who === p ? " (tu)" : "");
-  return `<div class="bhead">Che cosa fa questa spesa</div>
-    ${riga("Libri " + mio("Alessandra"), c.libri_ale)}
-    ${riga("Libri " + mio("Giulio"), c.libri_giulio)}
-    <div class="brow"><span>Saldo</span><b>${noto ? esc(saldoIo(c.saldo)) : "\u2014"}</b></div>
-    <p class="bnote">${esc(TIPO_NOTA[s.tipo] || "")}</p>
-    ${noto ? "" : `<p class="bnote">Scrivi l'importo per vedere le cifre.</p>`}`;
+  if (!noto) return `Scrivi l'importo per vedere che cosa fa questa spesa.`;
+  // "scarica" = finisce sui suoi libri. Prima Alessandra, poi Giulio, come nel foglio.
+  const voce = (p, v, primo) => (cfg.who === p ? (primo ? "tu scarichi " : "tu ") : (primo ? p + " scarica " : p + " ")) + eur(v);
+  const parti = [];
+  [["Alessandra", c.libri_ale], ["Giulio", c.libri_giulio]].forEach(x => { if (Math.abs(x[1]) > 0.004) parti.push(voce(x[0], x[1], !parti.length)); });
+  const libri = parti.length ? parti.join(", ") : "non entra nei libri di nessuno";
+  return `${esc(libri.charAt(0).toUpperCase() + libri.slice(1))} \u00b7 <b>${esc(saldoIo(c.saldo))}</b>`;
 }
 function currentTrip(d = today()) {
   const t = (D.trasferte || []).filter(t => t.inizio && t.fine && t.inizio <= d && d <= t.fine);
@@ -924,11 +942,11 @@ function rigaRilettura(p) {
   return `<div class="dett"><b>⚠ rileggendo la mail l'importo risulta ${esc(num(v))} ${esc(val)}</b>, non ${esc(num(Number(p.importo) || 0))} ${esc(p.valuta || "EUR")} — controlla prima di confermare
     <button class="btn sm" style="margin-left:6px" onclick="usaRilettura(${v})">usa ${esc(num(v))}</button></div>`;
 }
-// `$` vuole un SELETTORE, non un id: "#qImp". E dopo aver scritto nel campo va
+// `$` vuole un SELETTORE, non un id: "#fImp". E dopo aver scritto nel campo va
 // lanciato l'evento input, se no l'anteprima in euro e i libri restano al
 // numero di prima (ci sono appesi due listener).
 function usaRilettura(v) {
-  const e = $("#qImp"); if (!e) return;
+  const e = $("#fImp"); if (!e) return;
   e.value = v;
   e.dispatchEvent(new Event("input", { bubbles: true }));
   e.dispatchEvent(new Event("change", { bubbles: true }));
@@ -979,79 +997,8 @@ async function ripristinaProposta(id) {
   try { await write("proposta.stato", { id, stato: "nuova" }, d => { const x = (d.proposte || []).find(y => y.id === id); if (x) x.stato = "nuova"; }); }
   catch (e) {}
 }
-// La conferma: tutto già compilato, mancano solo chi ha pagato e come si divide.
-// `pre` (facoltativo) preseleziona dei campi: lo usa il bottone della
-// prenotazione per proporre la trasferta a cui la prenotazione e' collegata.
-function formProposta(id, pre) {
-  const p = visibleProp().find(x => x.id === id); if (!p) return;
-  const n = propNote(p);
-  const trip0 = (pre && pre.trasferta) || p.trasferta;
-  const s = { tipo: "condivisa", pagato_da: cfg.who, n_persone: 2 };
-  const cats = D.settings.categorie || [];
-  const vals = D.settings.valute || ["EUR"];
-  const trips = [...new Set([...(D.trasferte || []).map(t => t.nome), ...(D.spese || []).map(x => x.trasferta), p.trasferta, trip0])].filter(Boolean).sort();
-  openModal(`<h2 style="margin-top:0">Conferma spesa</h2>
-    <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
-      ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
-      ${rigaCarta(p)}
-      ${rigaRilettura(p)}
-      ${p.file_url ? `<a href="${esc(p.file_url)}" target="_blank" rel="noopener">🧾 apri il PDF allegato</a>` : n.pdf ? `<div class="muted">PDF nella mail ma non salvato</div>` : `<div class="muted">Nessun allegato: la spesa resterà senza scontrino</div>`}
-      ${n.link ? ` · <a href="${esc(n.link)}" target="_blank" rel="noopener">apri la mail del fornitore</a>` : ""}</div>
-    <div class="cols3"><div class="field"><label>Importo</label><input id="qImp" inputmode="decimal" value="${esc(p.importo)}"></div>
-      <div class="field"><label>Valuta</label><select id="qVal">${[...new Set([p.valuta || "EUR", ...vals])].map(v => `<option ${v === (p.valuta || "EUR") ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
-    <div class="preview" id="qPrev"></div>
-    <div class="cols"><div class="field"><label>Data</label><input id="qData" type="date" value="${esc(p.data)}"></div>
-      <div class="field"><label>Trasferta</label><select id="qTrip">${trips.map(t => `<option ${t === trip0 ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div></div>
-    <div class="field"><label>Categoria</label><select id="qCat">${cats.map(c => `<option ${c === p.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
-    <div class="field"><label>Descrizione</label><input id="qDesc" value="${esc(p.vendor || p.descrizione)}"></div>
-    <div class="field"><label>Tipo di spesa</label><div class="seg" id="qTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
-
-    <div class="field"><label>Chi ha pagato</label><div class="seg" id="qChi">${PERSONE.map(x => `<button data-v="${x}" class="${s.pagato_da === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
-    <div class="field" id="qN"><label>In quante persone si divide</label><div class="seg" id="qSegN">${[2, 3, 4, 5, 6].map(x => `<button data-v="${x}" class="${s.n_persone === x ? "on" : ""}">${x}</button>`).join("")}</div></div>
-    <div class="books" id="qBooks"></div>
-    <div id="qDup"></div>
-    <div class="row" style="gap:8px"><button class="btn primary grow" id="qSave">Crea la spesa</button><button class="btn" onclick="closeModal()">Annulla</button></div>
-    <div class="muted" style="margin-top:8px">Il PDF viene rinominato con la convenzione solita e spostato nella cartella della trasferta.</div>`);
-  const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
-  const qEurOra = () => { const i = parseFloat(String($("#qImp").value).replace(",", ".")) || 0; return $("#qVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
-  const qUpdBooks = () => { const b = $("#qBooks"); if (b) b.innerHTML = boxLibri(s, qEurOra()); };
-  seg("#qTipo", v => { s.tipo = v; $("#qN").hidden = !(v === "condivisa" || v === "ciascuno"); qUpdBooks(); });
-  seg("#qChi", v => { s.pagato_da = v; qUpdBooks(); }); seg("#qSegN", v => { s.n_persone = +v; qUpdBooks(); });
-  ["#qImp", "#qVal"].forEach(x => $(x).addEventListener("input", qUpdBooks));
-  const prev = async () => {
-    const v = $("#qVal").value, imp = parseFloat(String($("#qImp").value).replace(",", "."));
-    if (!imp || v === "EUR") return $("#qPrev").textContent = "";
-    $("#qPrev").textContent = "cambio…";
-    try { const r = await api("fx", { valuta: v, data: $("#qData").value }); s.cambio = r.cambio; $("#qPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#qData").value)})`; }
-    catch (e) { $("#qPrev").textContent = "cambio non disponibile (lo calcola il server)"; }
-  };
-  ["#qImp", "#qVal", "#qData"].forEach(x => $(x).addEventListener("change", () => prev().then(qUpdBooks)));
-  prev().then(qUpdBooks); qUpdBooks();
-  let dupVisto = ""; // T7, come in formSpesa
-  $("#qSave").addEventListener("click", async () => {
-    const importo = parseFloat(String($("#qImp").value).replace(",", "."));
-    if (!importo) return toast("Inserisci l'importo");
-    const trasferta = $("#qTrip").value; if (!trasferta) return toast("Scegli la trasferta");
-    // T7: la ricevuta dalla mail puo' essere una spesa gia' scritta a mano
-    const bozza = { data: $("#qData").value, trasferta, importo, valuta: $("#qVal").value, importo_eur: qEurOra(), tipo: s.tipo, conto: cfg.who, categoria: $("#qCat").value, descrizione: $("#qDesc").value.trim() };
-    const dup = dupDi(bozza, D.spese || []), chiave = dup.map(d => d.spesa.id).join(",") + "|" + importo + "|" + bozza.data + "|" + trasferta;
-    if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#qDup").innerHTML = avvisoDoppioni(dup); $("#qSave").textContent = "Crea comunque"; $("#qDup").scrollIntoView({ block: "nearest" }); return; }
-    const payload = {
-      id: p.id, importo: importo, valuta: $("#qVal").value, data: $("#qData").value, trasferta: trasferta,
-      categoria: $("#qCat").value, descrizione: $("#qDesc").value.trim(),
-      tipo: s.tipo, pagato_da: s.pagato_da, n_persone: s.n_persone, conto: cfg.who,
-    };
-    closeModal(); toast("Creo la spesa…");
-    try {
-      const r = await api("proposta.conferma", payload);
-      const i = (D.proposte || []).findIndex(x => x.id === p.id); if (i >= 0) D.proposte[i] = r.proposta;
-      const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
-      LS.set("data", D); render();
-      toast("Spesa creata" + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4000);
-    } catch (e) { toast("Errore: " + e.message, 5000); }
-  });
-}
-
+// formProposta e' passato nella sezione FORM SPESA (T10 giro 2): conferma di una
+// ricevuta e nuova spesa sono lo stesso modulo, costruito da moduloSpesa.
 
 // ---------------------------------------------------------------- POSTA (T10, giro 1)
 // Una pagina sola al posto di "Prenotazioni email" e "Proposte di spesa". La stessa
@@ -1189,7 +1136,7 @@ async function collegaSubito(id) {
 }
 
 // ---- la carta
-// La rilettura qui NON porta il bottone "usa 9,99": quello scrive in #qImp, che
+// La rilettura qui NON porta il bottone "usa 9,99": quello scrive in #fImp, che
 // esiste solo dentro il modulo. Qui e' un avviso, e toglie l'un tocco.
 function rigaRiletturaPosta(q) {
   const n = propNote(q) || {};
@@ -1370,7 +1317,199 @@ async function chiediSaldato(compId, data) {
 }
 
 // ---------------------------------------------------------------- FORM SPESA
+// T10 giro 2 (ADR-2). "Nuova spesa" e "Conferma spesa" erano due moduli gemelli
+// che si erano gia' scostati fra loro (uno indovinava la trasferta dalla data,
+// l'altro no; uno aveva il campo file, l'altro no; le regole di privacy sulla
+// lista delle trasferte stavano solo in uno dei due). Adesso c'e' UN costruttore
+// solo, `moduloSpesa`, e i due chiamanti gli passano soltanto cio' che li
+// distingue davvero: che cosa c'e' in testa, se c'e' il campo file, che cosa fa
+// il bottone Salva.
+//
+// Ordine e default sono quelli del §3.4 del ticket: importo grande con le valute
+// a pasticca (Q9), il tipo come tre bottoni che dicono che cosa vogliono dire,
+// chi ha pagato, la trasferta, sei categorie a pasticca coi nomi corti (Q8), la
+// descrizione coi suggerimenti presi dalle spese vecchie della stessa categoria,
+// foto e galleria al posto dell'input file di sistema, data e note chiuse sotto
+// "Altro", Salva appiccicato in fondo.
+//
+// Quello che NON si muove: computeSpesa / boxLibri / saldoIo fanno gli stessi
+// conti di prima, l'avviso doppioni (T7) sta dov'era — il primo tocco avvisa, il
+// secondo salva — e la forma di T9 resta intatta (su `regolamento` l'etichetta
+// del file dice "Fattura" e non c'e' categoria; su `caddie` non c'e' il campo
+// file; un pagamento nato da un compenso CHIEDE se segnarlo saldato).
+// ⚠ tools/audit-offline/test_form_spesa.js ritaglia app.js fra chiediSaldato e
+// prepFile e valuta solo quel pezzo: tutto questo blocco deve restare qui in
+// mezzo, o il test non lo vede piu'. E le due frasi che il test cerca (il nome
+// delle due funzioni preceduto da "async function") non vanno scritte qui
+// dentro nemmeno in un commento: sarebbero loro il taglio.
 let pendingFile = null;
+
+// Nome corto per la pasticca (Q8): "Viaggio - Vitto (Ristoranti/Spesa)" -> "Vitto".
+const catBreve = c => String(c || "").split(" - ").pop().replace(/\s*\(.*\)\s*$/, "").trim() || String(c || "");
+// Le categorie davvero usate, in ordine di quante volte compaiono. Fuori i movimenti
+// (caddie e regolamento): la loro categoria non la sceglie nessuno.
+function catTop(n) {
+  const c = {}, tutte = (D.settings && D.settings.categorie) || [];
+  (D.spese || []).forEach(x => { if (x.tipo === "caddie" || x.tipo === "regolamento") return; const k = String(x.categoria || ""); if (k) c[k] = (c[k] || 0) + 1; });
+  return Object.keys(c).filter(k => tutte.indexOf(k) >= 0).sort((a, b) => c[b] - c[a] || (a < b ? -1 : 1)).slice(0, n);
+}
+// Le valute piu' usate, tolte quelle gia' in pasticca (la trasferta ed EUR).
+function valTop(n, fuori) {
+  const c = {};
+  (D.spese || []).forEach(x => { const v = String(x.valuta || "EUR"); c[v] = (c[v] || 0) + 1; });
+  return Object.keys(c).filter(v => (fuori || []).indexOf(v) < 0).sort((a, b) => c[b] - c[a] || (a < b ? -1 : 1)).slice(0, n);
+}
+// Descrizioni gia' usate nella stessa categoria: "Cena", "Pranzo", "Benzina"...
+// Sono le stesse parole ogni volta, tanto vale offrirle invece di ribatterle.
+function suggDesc(cat) {
+  const c = {}, ult = {}, ord = [];
+  (D.spese || []).forEach(x => {
+    if (String(x.categoria || "") !== String(cat || "")) return;
+    const d = String(x.descrizione || "").trim();
+    if (!d || d.length > 28) return;
+    if (!(d in c)) { c[d] = 0; ult[d] = ""; ord.push(d); }
+    c[d]++;
+    const g = String(x.data || "").slice(0, 10);
+    if (g > ult[d]) ult[d] = g;
+  });
+  // Quante volte l'hai usata, e a parita' l'ultima volta che l'hai usata. In pari
+  // l'ordine alfabetico proponeva "Asian" prima di quello che avevi scritto ieri.
+  return ord.sort((a, b) => c[b] - c[a] || (ult[a] < ult[b] ? 1 : ult[a] > ult[b] ? -1 : 0));
+}
+
+// o = { titolo, testa, s, ex, conTipo, conCategoria, conNote, conFile, etichettaFile,
+//       notaFile, aiuto, salva, salvaComunque, onSalva, onElimina }
+function moduloSpesa(o) {
+  const s = o.s;
+  const cats = (D.settings && D.settings.categorie) || [], vals = (D.settings && D.settings.valute) || ["EUR"];
+  const conTipo = !!o.conTipo, conCat = o.conCategoria !== false, conFile = !!o.conFile;
+  // Le trasferte fra cui scegliere. Fuori le "casa/altro" in cui ho solo spese
+  // dell'altra persona: sono le sue settimane a casa, non mi riguardano.
+  const TRIP_PRIV = ["casa", "altro"];
+  const miaSpesa = x => !(x.tipo === "personale" && x.conto && x.conto !== cfg.who);
+  const hoSpese = n => (D.spese || []).some(x => x.trasferta === n && miaSpesa(x));
+  const soloAltro = n => (D.spese || []).some(x => x.trasferta === n && !miaSpesa(x)) && !hoSpese(n);
+  const trips = [...new Set([...(D.trasferte || []).filter(t => !TRIP_PRIV.includes(String(t.tipo || "").toLowerCase()) || !soloAltro(t.nome)).map(t => t.nome), ...(D.spese || []).filter(miaSpesa).map(x => x.trasferta), s.trasferta])].filter(Boolean).sort();
+  // Q9: la valuta della trasferta, poi EUR, poi le tre piu' usate. Le altre 15
+  // restano nel menu dietro "altre...", che e' dove passano una volta ogni tanto.
+  const v0 = s.valuta || "EUR";
+  const chipVal = [...new Set([v0, "EUR", ...valTop(3, [v0, "EUR"])])];
+  // Q8: sei categorie, piu' quella gia' scritta sulla riga se non e' fra quelle.
+  const chipCat = [...new Set([...(s.categoria ? [s.categoria] : []), ...catTop(6)])].slice(0, 7);
+  // /2 /3 /4 (§3.4). Se una riga vecchia si divide in 5 o 6, quella pasticca resta:
+  // non si perde un valore gia' scritto solo perche' il modulo e' cambiato.
+  const nSplit = [...new Set([2, 3, 4, Math.max(2, parseInt(s.n_persone, 10) || 2)])].sort((a, b) => a - b);
+  const TIPO_BTN = { condivisa: ["Condivisa", "una la paga, la dividete"], ciascuno: ["Ognuno la sua", "avete già pagato metà ciascuno"], personale: ["Personale", "solo tua"] };
+  pendingFile = null;
+  openModal(`
+    <h2 style="margin-top:0">${esc(o.titolo)}</h2>
+    ${o.testa || ""}
+    <div class="field"><label>Importo</label>
+      <div class="improw"><input id="fImp" class="impbig" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"><span class="impval" id="fValLab">${esc(v0)}</span></div>
+      <div class="chips" id="fChipVal">${chipVal.map(v => `<button type="button" data-v="${esc(v)}" class="${v === v0 ? "on" : ""}">${esc(v)}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
+      <select id="fVal" hidden>${[...new Set([v0, ...vals])].map(v => `<option ${v === v0 ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
+    <div class="preview" id="fPrev">${o.ex && v0 !== "EUR" && s.importo_eur ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
+    ${conTipo ? `<div class="field"><div class="tipi" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button type="button" data-v="${k}" class="${s.tipo === k ? "on" : ""}"><b>${TIPO_BTN[k][0]}</b><span>${TIPO_BTN[k][1]}</span></button>`).join("")}</div>
+      <div class="row split" id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}><span class="muted">In quante parti</span><div class="chips inline" id="segN">${nSplit.map(n => `<button type="button" data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">÷${n}</button>`).join("")}</div></div></div>` : ""}
+    <div class="books" id="fBooks"></div>
+    <details class="spiega"><summary>?</summary>${(conTipo ? ["condivisa", "ciascuno", "personale"] : [s.tipo]).map(k => `<p><b>${esc(TIPI[k] || k)}</b> — ${esc(TIPO_NOTA[k] || "")}</p>`).join("")}${o.aiuto ? `<p>${esc(o.aiuto)}</p>` : ""}</details>
+    <div class="field"><label>${s.tipo === "regolamento" ? "Chi paga" : "Chi ha pagato"}</label><div class="seg" id="segChi">${PERSONE.map(p => `<button type="button" data-v="${p}" class="${s.pagato_da === p ? "on" : ""}">${p}${cfg.who === p ? " (tu)" : ""}</button>`).join("")}</div></div>
+    <div class="field"><label>Trasferta</label><select id="fTrip">${s.trasferta ? "" : `<option value="" selected>Scegli la trasferta…</option>`}${trips.map(t => `<option ${t === s.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}<option value="__new">＋ Nuova…</option></select></div>
+    ${conCat ? `<div class="field"><label>Categoria</label>
+      <div class="chips" id="fChipCat">${chipCat.map(c => `<button type="button" data-v="${esc(c)}" class="${c === s.categoria ? "on" : ""}">${esc(catBreve(c))}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
+      <select id="fCat" hidden>${cats.map(c => `<option ${c === s.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>` : ""}
+    <div class="field"><label>Descrizione</label><input id="fDesc" value="${esc(s.descrizione)}" placeholder="${s.tipo === "caddie" ? "es. Caddie Aprile/Maggio" : s.tipo === "regolamento" ? "es. Bonifico saldo Australia" : "es. Cena, Benzina, Hotel…"}"><div class="chips" id="fSugg"></div></div>
+    ${conFile ? `<div class="field"><label>${esc(o.etichettaFile)} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label>
+      <div class="row" style="gap:8px"><button type="button" class="btn grow" id="fCam">📷 Scatta</button><button type="button" class="btn grow" id="fGal">🖼 Galleria o file</button></div>
+      <input id="fFoto" type="file" accept="image/*" capture="environment" hidden><input id="fFile" type="file" accept="image/*,application/pdf" hidden>
+      <div class="muted" id="fFileInfo">${o.notaFile || ""}</div></div>` : ""}
+    <details class="altro"><summary>Altro <span class="muted" id="fAltroLab">· ${esc(fmtDY(s.data))}</span></summary>
+      <div class="field"><label>Data</label><input id="fData" type="date" value="${esc(s.data)}"></div>
+      ${o.conNote ? `<div class="field"><label>Note</label><input id="fNote" value="${esc(s.note || "")}"></div>` : ""}</details>
+    <div id="fDup"></div>
+    <div class="formfoot"><div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">${esc(o.salva)}</button>${o.onElimina ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div></div>`);
+
+  // --- interruttori ---
+  const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
+  // Le pasticche hanno in fondo "altre...", che non si accende: apre il menu completo.
+  const chips = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.altre) return cb(null); el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
+  const eurOra = () => { const i = parseFloat(String($("#fImp").value).replace(",", ".")) || 0; return $("#fVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
+  const updBooks = () => { const b = $("#fBooks"); if (b) b.innerHTML = boxLibri(s, eurOra()); };
+  // I suggerimenti seguono la categoria scelta e si restringono mentre scrivi.
+  let suggOra = [];
+  const updSugg = () => {
+    const el = $("#fSugg"); if (!el) return;
+    const cat = $("#fCat") ? $("#fCat").value : s.categoria;
+    const q = String(($("#fDesc") && $("#fDesc").value) || "").trim().toLowerCase();
+    suggOra = suggDesc(cat).filter(x => !q || (x.toLowerCase().indexOf(q) >= 0 && x.toLowerCase() !== q)).slice(0, 6);
+    el.innerHTML = suggOra.map((x, i) => `<button type="button" data-i="${i}">${esc(x)}</button>`).join("");
+  };
+  // Il cambio del giorno, chiesto al server: identico a prima.
+  const prev = async () => {
+    const v = $("#fVal").value, imp = parseFloat(String($("#fImp").value).replace(",", "."));
+    if (!imp || v === "EUR") { $("#fPrev").textContent = ""; return; }
+    $("#fPrev").textContent = "cambio…";
+    try { const r = await api("fx", { valuta: v, data: $("#fData").value }); s.cambio = r.cambio; $("#fPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#fData").value)})`; }
+    catch (e) { $("#fPrev").textContent = "cambio non disponibile (lo calcola il server al salvataggio)"; }
+  };
+  if (conTipo) seg("#segTipo", v => { s.tipo = v; const n = $("#fN"); if (n) n.hidden = !(v === "condivisa" || v === "ciascuno"); updBooks(); });
+  seg("#segChi", v => { s.pagato_da = v; updBooks(); });
+  seg("#segN", v => { s.n_persone = +v; updBooks(); });
+  chips("#fChipVal", v => { const sel = $("#fVal"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; const l = $("#fValLab"); if (l) l.textContent = v; prev().then(updBooks); });
+  chips("#fChipCat", v => { const sel = $("#fCat"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; s.categoria = v; updSugg(); });
+  const selVal = $("#fVal"); if (selVal) selVal.addEventListener("change", () => { const l = $("#fValLab"); if (l) l.textContent = selVal.value; prev().then(updBooks); });
+  const selCat = $("#fCat"); if (selCat) selCat.addEventListener("change", () => { s.categoria = selCat.value; updSugg(); });
+  const inDesc = $("#fDesc"); if (inDesc) inDesc.addEventListener("input", updSugg);
+  const elSugg = $("#fSugg"); if (elSugg) elSugg.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; const d = suggOra[+b.dataset.i]; if (d == null) return; $("#fDesc").value = d; updSugg(); });
+  $("#fImp").addEventListener("input", updBooks);
+  const inData = $("#fData"); if (inData) inData.addEventListener("change", () => { const l = $("#fAltroLab"); if (l) l.textContent = "· " + fmtDY(inData.value); });
+  // Niente piu' prompt(): il nome della trasferta nuova si chiede col foglietto
+  // che usa tutto il resto della app (§6 del ticket).
+  const selTrip = $("#fTrip");
+  selTrip.addEventListener("change", async () => {
+    if (selTrip.value !== "__new") { s.trasferta = selTrip.value; return; }
+    selTrip.value = s.trasferta || "";
+    const n = await chiediTesto("Nuova trasferta", "", "es. Dutch Ladies Open");
+    if (!n) return;
+    selTrip.insertAdjacentHTML("afterbegin", `<option>${esc(n)}</option>`);
+    selTrip.value = n; s.trasferta = n;
+  });
+  ["#fImp", "#fData"].forEach(x => { const el = $(x); if (el) el.addEventListener("change", () => prev().then(updBooks)); });
+  if (v0 !== "EUR") prev().then(updBooks);
+  updBooks(); updSugg();
+  // Foto: due bottoni invece dell'input di sistema. Sotto restano due input file
+  // veri e nascosti - la fotocamera (capture) e la galleria, che su iPhone apre
+  // anche "Scegli file" per i PDF.
+  const scegli = (bSel, iSel) => {
+    const b = $(bSel), i = $(iSel); if (!b || !i) return;
+    b.addEventListener("click", () => i.click());
+    i.addEventListener("change", async () => { const f = i.files[0]; if (!f) return; $("#fFileInfo").textContent = "Preparo il file…"; pendingFile = await prepFile(f); $("#fFileInfo").textContent = `${pendingFile.name} · ${Math.round(pendingFile.base64.length * 0.75 / 1024)} KB`; });
+  };
+  scegli("#fCam", "#fFoto"); scegli("#fGal", "#fFile");
+
+  let dupVisto = ""; // T7: la chiave dell'avviso gia' mostrato; se la spesa cambia, si riavvisa
+  $("#fSave").addEventListener("click", async () => {
+    s.importo = parseFloat(String($("#fImp").value).replace(",", ".")); if (!s.importo) return toast("Inserisci l'importo");
+    s.valuta = $("#fVal").value; s.data = $("#fData").value; s.trasferta = $("#fTrip").value;
+    s.descrizione = $("#fDesc").value.trim();
+    if ($("#fNote")) s.note = $("#fNote").value.trim();
+    if ($("#fCat")) s.categoria = $("#fCat").value;
+    if (s.tipo === "regolamento") s.categoria = "Altro";
+    if (!s.trasferta || s.trasferta === "__new") return toast("Scegli la trasferta");
+    if (s.valuta === "EUR") s.cambio = 1;
+    if (s.tipo === "personale") s.conto = cfg.who;
+    // T7: se somiglia a una spesa gia' registrata si chiede conferma, non si blocca.
+    // Fuori dall'euro senza cambio l'importo in euro non si sa: si confronta solo
+    // sulla stessa valuta, ed e' il verso giusto in cui sbagliare (come in Posta).
+    const eurNoto = s.valuta === "EUR" ? s.importo : Math.round(s.importo * (Number(s.cambio) || 0) * 100) / 100;
+    const dup = dupDi(Object.assign({}, s, { importo_eur: eurNoto }), D.spese || []);
+    const chiave = dup.map(d => d.spesa.id).join(",") + "|" + s.importo + "|" + s.data + "|" + s.trasferta;
+    if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#fDup").innerHTML = avvisoDoppioni(dup); $("#fSave").textContent = o.salvaComunque; $("#fDup").scrollIntoView({ block: "nearest" }); return; }
+    await o.onSalva(s);
+  });
+  if (o.onElimina) $("#fDel").addEventListener("click", o.onElimina);
+}
+
 // pre = valori gia' compilati (importo, pagato_da, descrizione): serve a "Registra pagamento",
 // che arriva dal compenso con l'importo netto gia' calcolato
 // compId = il compenso da cui arriva il pagamento: serve solo per chiedere, dopo il
@@ -1378,70 +1517,76 @@ let pendingFile = null;
 function formSpesa(id, tripName, forceTipo, pre, compId) {
   const ex = id ? (D.spese || []).find(s => s.id === id) : null;
   const cur = currentTrip();
-  const s = ex ? Object.assign({}, ex) : Object.assign({ data: today(), trasferta: tripName || (cur ? cur.nome : ""), categoria: forceTipo === "caddie" ? "Golf - Caddie" : "", descrizione: "", importo: "", valuta: (cur && cur.valuta) || "EUR", pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" }, pre || {});
-  pendingFile = null;
-  const TRIP_PRIV = ["casa", "altro"];
-  const miaSpesa = x => !(x.tipo === "personale" && x.conto && x.conto !== cfg.who);
-  const hoSpese = n => (D.spese || []).some(x => x.trasferta === n && miaSpesa(x));
-  const soloAltro = n => (D.spese || []).some(x => x.trasferta === n && !miaSpesa(x)) && !hoSpese(n);
-  const trips = [...new Set([...(D.trasferte || []).filter(t => !TRIP_PRIV.includes(String(t.tipo || "").toLowerCase()) || !soloAltro(t.nome)).map(t => t.nome), ...(D.spese || []).filter(miaSpesa).map(x => x.trasferta), s.trasferta])].filter(Boolean).sort();
-  const cats = D.settings.categorie || []; const vals = D.settings.valute || ["EUR"];
+  // §3.4: la trasferta in corso; se non ce n'e' una, quella le cui date contengono
+  // il giorno (con la data di oggi sono la stessa cosa, ma non lo saranno piu' il
+  // giorno in cui questo modulo si aprira' su una data diversa).
+  const gDate = trasfertaDaData(today());
+  const tripDef = tripName || (cur ? cur.nome : "") || (gDate ? gDate.nome : "");
+  const valDef = ((D.trasferte || []).find(t => t.nome === tripDef) || {}).valuta || (cur && cur.valuta) || "EUR";
+  // La categoria di partenza e' la piu' usata (Vitto, 120 righe su 306): prima era
+  // "" e il menu sceglieva da se' la PRIMA della lista, cioe' "Viaggio - Voli",
+  // senza dirlo a nessuno. Adesso la pasticca accesa dice quale sara'.
+  const catDef = forceTipo === "caddie" ? "Golf - Caddie" : (catTop(1)[0] || "");
+  const s = ex ? Object.assign({}, ex) : Object.assign({ data: today(), trasferta: tripDef, categoria: catDef, descrizione: "", importo: "", valuta: valDef, pagato_da: forceTipo === "regolamento" ? "Alessandra" : cfg.who, tipo: forceTipo || "condivisa", n_persone: 2, conto: cfg.who, note: "", cambio: "" }, pre || {});
   const isMov = s.tipo === "caddie" || s.tipo === "regolamento";
-  openModal(`
-    <h2 style="margin-top:0">${ex ? "Modifica" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}</h2>
-    ${isMov ? "" : `<div class="field"><div class="seg" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button data-v="${k}" class="${s.tipo === k ? "on" : ""}">${TIPI[k]}</button>`).join("")}</div></div>
-`}
-    <div class="cols3"><div class="field"><label>Importo</label><input id="fImp" inputmode="decimal" placeholder="0,00" value="${esc(s.importo)}"></div>
-      <div class="field"><label>Valuta</label><select id="fVal">${[...new Set([s.valuta, ...vals])].map(v => `<option ${v === s.valuta ? "selected" : ""}>${v}</option>`).join("")}</select></div></div>
-    <div class="preview" id="fPrev">${ex && s.valuta !== "EUR" ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
-    <div class="cols"><div class="field"><label>Data</label><input id="fData" type="date" value="${esc(s.data)}"></div>
-      <div class="field"><label>Trasferta</label><select id="fTrip">${trips.map(t => `<option ${t === s.trasferta ? "selected" : ""}>${esc(t)}</option>`).join("")}<option value="__new">＋ Nuova…</option></select></div></div>
-    ${isMov && s.tipo === "regolamento" ? "" : `<div class="field"><label>Categoria</label><select id="fCat">${cats.map(c => `<option ${c === s.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>`}
-    <div class="field"><label>Descrizione</label><input id="fDesc" value="${esc(s.descrizione)}" placeholder="${s.tipo === "caddie" ? "es. Caddie Aprile/Maggio" : s.tipo === "regolamento" ? "es. Bonifico saldo Australia" : "es. Cena, Benzina, Hotel…"}"></div>
-    <div class="field"><label>${s.tipo === "regolamento" ? "Chi paga" : "Chi ha pagato"}</label><div class="seg" id="segChi">${PERSONE.map(p => `<button data-v="${p}" class="${s.pagato_da === p ? "on" : ""}">${p}</button>`).join("")}</div></div>
-    <div class="field" id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}><label>In quante persone si divide</label><div class="seg" id="segN">${[2, 3, 4, 5, 6].map(n => `<button data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">${n}</button>`).join("")}</div></div>
-    ${s.tipo === "caddie" ? "" : `<div class="field"><label>${s.tipo === "regolamento" ? "Fattura" : "Scontrino"} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label><input id="fFile" type="file" accept="image/*,application/pdf"><div class="muted" id="fFileInfo">${s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : ""}</div></div>`}
-    <div class="field"><label>Note</label><input id="fNote" value="${esc(s.note || "")}"></div>
-    <div class="books" id="fBooks"></div>
-    <div id="fDup"></div>
-    <div class="row" style="gap:8px"><button class="btn primary grow" id="fSave">Salva</button>${ex ? `<button class="btn danger" id="fDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
-  const seg = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
-  // il riquadro "che cosa fa questa spesa" si riaggiorna a ogni scelta
-  const eurOra = () => { const i = parseFloat(String($("#fImp").value).replace(",", ".")) || 0; return $("#fVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
-  const updBooks = () => { const b = $("#fBooks"); if (b) b.innerHTML = boxLibri(s, eurOra()); };
-  seg("#segTipo", v => { s.tipo = v; $("#fN").hidden = !(v === "condivisa" || v === "ciascuno"); updBooks(); });
-  seg("#segChi", v => { s.pagato_da = v; updBooks(); }); seg("#segN", v => { s.n_persone = +v; updBooks(); });
-  ["#fImp", "#fVal"].forEach(x => $(x).addEventListener("input", updBooks));
-  $("#fTrip").addEventListener("change", e => { if (e.target.value === "__new") { const n = prompt("Nome nuova trasferta"); if (n) { const o = document.createElement("option"); o.textContent = n; e.target.insertBefore(o, e.target.firstChild); e.target.value = n; } else e.target.value = s.trasferta; } });
-  const prev = async () => { const v = $("#fVal").value, imp = parseFloat(String($("#fImp").value).replace(",", ".")); if (!imp) return $("#fPrev").textContent = ""; if (v === "EUR") return $("#fPrev").textContent = ""; $("#fPrev").textContent = "cambio…"; try { const r = await api("fx", { valuta: v, data: $("#fData").value }); s.cambio = r.cambio; $("#fPrev").textContent = `≈ ${eur(imp * r.cambio)} (cambio ${num(r.cambio, 4)} del ${fmtD($("#fData").value)})`; } catch (e) { $("#fPrev").textContent = "cambio non disponibile (verrà calcolato al salvataggio)"; } };
-  ["#fImp", "#fVal", "#fData"].forEach(x => $(x).addEventListener("change", () => prev().then(updBooks)));
-  updBooks();
-  const fileIn = $("#fFile"); if (fileIn) fileIn.addEventListener("change", async () => { const f = fileIn.files[0]; if (!f) return; $("#fFileInfo").textContent = "Preparo la foto…"; pendingFile = await prepFile(f); $("#fFileInfo").textContent = `${pendingFile.name} · ${Math.round(pendingFile.base64.length * 0.75 / 1024)} KB`; });
-  let dupVisto = ""; // T7: la chiave dell'avviso gia' mostrato; se la spesa cambia, si riavvisa
-  $("#fSave").addEventListener("click", async () => {
-    s.importo = parseFloat(String($("#fImp").value).replace(",", ".")); if (!s.importo) return toast("Inserisci l'importo");
-    s.valuta = $("#fVal").value; s.data = $("#fData").value; s.trasferta = $("#fTrip").value; s.descrizione = $("#fDesc").value.trim(); s.note = $("#fNote").value.trim();
-    if ($("#fCat")) s.categoria = $("#fCat").value; if (s.tipo === "regolamento") s.categoria = "Altro";
-    if (!s.trasferta) return toast("Scegli la trasferta");
-    if (s.valuta === "EUR") s.cambio = 1;
-    if (s.tipo === "personale") s.conto = cfg.who;
-    if (!s.id) { s.id = uid(); s.creato = new Date().toISOString().slice(0, 19); s.inserito_da = cfg.who; }
-    s.modificato = new Date().toISOString().slice(0, 19);
-    // stima locale (il server ricalcola col cambio del giorno)
-    s.importo_eur = Math.round(s.importo * (s.cambio || 1) * 100) / 100; computeSpesa(s);
-    // T7: se somiglia a una spesa gia' registrata si chiede conferma, non si blocca
-    const dup = dupDi(s, D.spese || []), chiave = dup.map(d => d.spesa.id).join(",") + "|" + s.importo + "|" + s.data + "|" + s.trasferta;
-    if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#fDup").innerHTML = avvisoDoppioni(dup); $("#fSave").textContent = "Salva comunque"; $("#fDup").scrollIntoView({ block: "nearest" }); return; }
-    const payload = Object.assign({}, s); if (pendingFile) payload.file = pendingFile;
-    if (pendingFile) payload.scontrino = "";
-    closeModal();
-    const res = await write("spesa.save", payload, d => { const i = d.spese.findIndex(x => x.id === s.id); if (i >= 0) d.spese[i] = s; else d.spese.push(s); });
-    if (res) { const i = D.spese.findIndex(x => x.id === res.id); if (i >= 0) D.spese[i] = res; LS.set("data", D); render(); toast("Salvato" + (res.valuta !== "EUR" ? ` · ${eur(res.importo_eur)}` : "")); }
-    // T9: il pagamento arriva da un compenso → si CHIEDE se segnarlo saldato.
-    // Mai automatico: un acconto chiuderebbe per sbaglio l'intero compenso.
-    if (res && compId) await chiediSaldato(compId, s.data);
+  moduloSpesa({
+    titolo: `${ex ? "Modifica" : "Nuova"} ${isMov ? TIPI[s.tipo].toLowerCase() : "spesa"}`,
+    s: s, ex: !!ex, conTipo: !isMov, conCategoria: s.tipo !== "regolamento", conNote: true,
+    conFile: s.tipo !== "caddie", etichettaFile: s.tipo === "regolamento" ? "Fattura" : "Scontrino",
+    notaFile: s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : "",
+    salva: "Salva", salvaComunque: "Salva comunque",
+    onElimina: ex ? (async () => { if (!confirm("Eliminare questa spesa?")) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); }); }) : null,
+    onSalva: async (s) => {
+      if (!s.id) { s.id = uid(); s.creato = new Date().toISOString().slice(0, 19); s.inserito_da = cfg.who; }
+      s.modificato = new Date().toISOString().slice(0, 19);
+      // stima locale (il server ricalcola col cambio del giorno)
+      s.importo_eur = Math.round(s.importo * (s.cambio || 1) * 100) / 100; computeSpesa(s);
+      const payload = Object.assign({}, s); if (pendingFile) { payload.file = pendingFile; payload.scontrino = ""; }
+      closeModal();
+      const res = await write("spesa.save", payload, d => { const i = d.spese.findIndex(x => x.id === s.id); if (i >= 0) d.spese[i] = s; else d.spese.push(s); });
+      if (res) { const i = D.spese.findIndex(x => x.id === res.id); if (i >= 0) D.spese[i] = res; LS.set("data", D); render(); toast("Salvato" + (res.valuta !== "EUR" ? ` · ${eur(res.importo_eur)}` : "")); }
+      // T9: il pagamento arriva da un compenso -> si CHIEDE se segnarlo saldato.
+      // Mai automatico: un acconto chiuderebbe per sbaglio l'intero compenso.
+      if (res && compId) await chiediSaldato(compId, s.data);
+    },
   });
-  if (ex) $("#fDel").addEventListener("click", async () => { if (!confirm("Eliminare questa spesa?")) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); }); });
+}
+
+// La conferma di una ricevuta letta dalla posta: stesso modulo della spesa nuova,
+// con in testa la mail da cui viene e senza campo file (il PDF ce l'ha gia' lei).
+// `pre` (facoltativo) preseleziona dei campi: lo usa Posta per proporre la
+// trasferta della carta. Niente entra in Spese senza questo tocco.
+function formProposta(id, pre) {
+  const p = visibleProp().find(x => x.id === id); if (!p) return;
+  const n = propNote(p);
+  const gDate = trasfertaDaData(p.data);
+  const trip0 = (pre && pre.trasferta) || p.trasferta || (gDate ? gDate.nome : "");
+  const s = { data: p.data, trasferta: trip0, categoria: p.categoria || "Altro", descrizione: String(p.vendor || p.descrizione || "").trim(),
+              importo: p.importo, valuta: p.valuta || "EUR", tipo: "condivisa", pagato_da: cfg.who, n_persone: 2, conto: cfg.who, cambio: "" };
+  moduloSpesa({
+    titolo: "Conferma spesa", s: s, ex: false, conTipo: true, conCategoria: true, conNote: false, conFile: false,
+    aiuto: "Il PDF viene rinominato con la convenzione solita e spostato nella cartella della trasferta.",
+    salva: "Crea la spesa", salvaComunque: "Crea comunque",
+    testa: `<div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)} · ${fmtDY(p.data_email)}</div>
+      ${n.evidenza ? `<div class="dett">letto da: "${esc(n.evidenza)}"</div>` : ""}
+      ${rigaCarta(p)}
+      ${rigaRilettura(p)}
+      ${p.file_url ? `<a href="${esc(p.file_url)}" target="_blank" rel="noopener">🧾 apri il PDF allegato</a>` : n.pdf ? `<div class="muted">PDF nella mail ma non salvato</div>` : `<div class="muted">Nessun allegato: la spesa resterà senza scontrino</div>`}
+      ${n.link ? ` · <a href="${esc(n.link)}" target="_blank" rel="noopener">apri la mail del fornitore</a>` : ""}</div>`,
+    onSalva: async (s) => {
+      const payload = { id: p.id, importo: s.importo, valuta: s.valuta, data: s.data, trasferta: s.trasferta,
+                        categoria: s.categoria, descrizione: s.descrizione, tipo: s.tipo, pagato_da: s.pagato_da,
+                        n_persone: s.n_persone, conto: cfg.who };
+      closeModal(); toast("Creo la spesa…");
+      try {
+        const r = await api("proposta.conferma", payload);
+        const i = (D.proposte || []).findIndex(x => x.id === p.id); if (i >= 0) D.proposte[i] = r.proposta;
+        const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
+        LS.set("data", D); render();
+        toast("Spesa creata" + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4000);
+      } catch (e) { toast("Errore: " + e.message, 5000); }
+    },
+  });
 }
 
 async function prepFile(f) {
