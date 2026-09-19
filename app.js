@@ -1154,8 +1154,11 @@ function formPren(id) {
   // la trasferta proposta: quella scritta dal lettore, se no quella indovinata dalle date
   const tid0 = p.trasferta_id || (trasfertaDaData(p.inizio) || trips[0] || {}).id;
   const voci = tid => tripChecks(tid);
-  // stessa preferenza del bottone da un tocco in Posta: una regola sola, un posto solo
-  const voceOptions = tid => { const cs = voci(tid); const pref = vocePreferita(p, tid); return cs.map(c => `<option value="${c.id}" ${pref && pref.id === c.id ? "selected" : ""}>${esc(c.voce)} (${STATI[c.stato]?.lab || c.stato})</option>`).join("") + `<option value="">＋ Nuova voce: ${esc(sugg[0] || p.oggetto.slice(0, 30))}</option>`; };
+  // stessa preferenza del bottone da un tocco in Posta: una regola sola, un posto solo.
+  // T11: una voce che ha gia' una prenotazione lo dice nel menu, e se nessuna voce
+  // libera combacia la preselezione cade su "Nuova voce" (prima cadeva, in silenzio,
+  // sulla prima voce della lista, qualunque fosse).
+  const voceOptions = tid => { const cs = voci(tid); const pref = vocePreferita(p, tid); return cs.map(c => `<option value="${c.id}" ${pref && pref.id === c.id ? "selected" : ""}>${esc(c.voce)} (${STATI[c.stato]?.lab || c.stato}${voceLibera(c, p) ? "" : " · ha già una prenotazione"})</option>`).join("") + `<option value="" ${pref ? "" : "selected"}>＋ Nuova voce: ${esc(sugg[0] || p.oggetto.slice(0, 30))}</option>`; };
   openModal(`<h2 style="margin-top:0">Collega prenotazione</h2>
     <div class="card small"><b>${esc(p.oggetto)}</b><div class="muted">${esc(p.mittente)}</div><div>${TIPO_PREN[p.tipo] || ""} ${p.inizio ? fmtDY(p.inizio) + (p.fine && p.fine !== p.inizio ? " → " + fmtDY(p.fine) : "") : ""}${p.luogo ? " · " + esc(p.luogo) : ""}${p.codice ? " · codice <b>" + esc(p.codice) + "</b>" : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div>
     ${prenRighe(p).map(r => `<div class="dett">${esc(r)}</div>`).join("")}
@@ -1340,20 +1343,48 @@ function apriProposta(id) { const c = cartaDiId(id); formProposta(id, { trasfert
 // ---- la prenotazione in un tocco
 // La voce che il modulo preseleziona da sempre: la prima che combacia col tipo e
 // non e' ancora fatta, se no la prima che combacia. Qui diventa il bottone.
-function vocePreferita(p, tid) {
-  const sugg = SUGG_PREN[p.tipo] || [], cs = tripChecks(tid);
-  const ok = c => sugg.some(s => String(c.voce).toLowerCase().startsWith(s.toLowerCase()));
-  return cs.find(c => ok(c) && c.stato === "da_fare") || cs.find(ok) || null;
+// T11: una voce che ha GIA' una prenotazione attaccata non si propone piu'. Le due
+// Airbnb dello stesso alloggio dicevano tutte e due "Alloggio", e dopo il primo
+// Collega la seconda avrebbe riscritto la voce sopra la prima. "Libera" vuol dire
+// senza prenotazione collegata (prenDiVoce): una voce segnata Fatto a mano resta
+// proponibile, agganciarle la mail e' proprio quello che serve.
+// Limite noto: le prenotazioni dell'altro non arrivano (privacy), quindi una voce
+// collegata da lui/lei qui sembra libera.
+function vociCheCombaciano(p, tid) {
+  const sugg = SUGG_PREN[p.tipo] || [];
+  return tripChecks(tid).filter(c => sugg.some(s => String(c.voce).toLowerCase().startsWith(s.toLowerCase())));
 }
-// null = niente un tocco (trasferta sconosciuta, oppure tipo "altro" senza voce).
+function voceLibera(c, p) { const x = prenDiVoce(c.id); return !x || x.id === p.id; }
+function vocePreferita(p, tid) {
+  const cs = vociCheCombaciano(p, tid).filter(c => voceLibera(c, p));
+  return cs.find(c => c.stato === "da_fare") || cs[0] || null;
+}
+function vociPrese(p, tid) { return vociCheCombaciano(p, tid).filter(c => !voceLibera(c, p)); }
+// La trasferta su cui si ragiona: quella scritta dal lettore, se no quella dedotta dalla data.
+function tripDiPren(p) { return p.trasferta_id ? (D.trasferte || []).find(x => x.id === p.trasferta_id) || null : trasfertaDaData(p.inizio); }
+// null = niente un tocco (trasferta sconosciuta, tipo "altro" senza voce, oppure le
+// voci giuste ci sono ma sono gia' tutte prese).
 function unToccoPren(p) {
   if (!p || p.stato !== "nuova") return null;
-  const t = p.trasferta_id ? (D.trasferte || []).find(x => x.id === p.trasferta_id) : trasfertaDaData(p.inizio);
+  const t = tripDiPren(p);
   if (!t) return null;
   const v = vocePreferita(p, t.id);
   if (v) return { trasferta_id: t.id, voce_id: v.id, voce: v.voce, trip: t.nome, nuova: false };
+  // T11: se "Alloggio" c'e' ed e' gia' collegato, creare una seconda "Alloggio" con un
+  // tocco sarebbe un doppione tanto quanto riscrivere la prima. Decide la persona dal
+  // modulo — o con Ignora, se e' la stessa prenotazione arrivata due volte.
+  if (vociPrese(p, t.id).length) return null;
   const s = (SUGG_PREN[p.tipo] || [])[0];
   return s ? { trasferta_id: t.id, voce_id: "", voce: s, trip: t.nome, nuova: true } : null;
+}
+// Perche' il bottone "Collega" non si puo' dare (specchio di perNoUnTocco). "" = si puo'.
+function perNoCollega(p) {
+  if (unToccoPren(p)) return "";
+  const t = tripDiPren(p);
+  if (!t) return "non si sa la trasferta";
+  const prese = vociPrese(p, t.id);
+  if (prese.length) return prese.map(c => "“" + c.voce + "”").join(" e ") + (prese.length === 1 ? " ha" : " hanno") + " già una prenotazione collegata";
+  return "nessuna voce che combaci";
 }
 async function collegaSubito(id) {
   const p = visiblePren().find(x => x.id === id), u = p && unToccoPren(p);
@@ -1405,7 +1436,7 @@ function postaAzioni(c) {
     const u = unToccoPren(p);
     h += `<div class="pact">` + (u
       ? `<button class="btn primary pbtn" onclick="collegaSubito('${p.id}')">Collega a “${esc(u.voce)}”${u.nuova ? " (voce nuova)" : ""} · ${esc(u.trip)}</button>` + dedotta
-      : `<div class="muted">Prenotazione: ${c.trip ? "nessuna voce che combaci" : "non si sa la trasferta"}, scegli tu.</div>`) +
+      : `<div class="muted">Prenotazione: ${esc(perNoCollega(p))}, scegli tu.</div>`) +
       `<div class="row" style="gap:8px;margin-top:6px"><button class="btn sm grow${u ? "" : " primary"}" onclick="formPren('${p.id}')">Modifica…</button><button class="btn sm" onclick="ignoraPren('${p.id}')">Ignora</button></div></div>`;
   } else if (p && p.stato === "collegata") {
     const v = (D.checklist || []).find(x => x.id === p.voce_id);
