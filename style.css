@@ -63,11 +63,13 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .check{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
 .check:last-child{border-bottom:0}
 .check .st{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:15px;flex:0 0 30px;cursor:pointer;background:var(--bg)}
-.check .st.prenotato{background:#e2eefb;border-color:var(--accent)} .check .st.pagato{background:var(--brand-soft);border-color:var(--brand)} .check .st.na{opacity:.4}
-.check .name{font-weight:600} .check.na .name{text-decoration:line-through;color:var(--muted)}
-.ordbtn{display:flex;flex-direction:column;gap:3px;flex:0 0 34px}
-.ordbtn .obtn{width:34px;height:24px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink2);font-size:12px;line-height:1;padding:0;cursor:pointer}
-.ordbtn .obtn:disabled{opacity:.3}
+/* T10 giro 4 (Q3): la spunta — vuota = da fare, ✓ verde = fatto, "–" spento = non serve */
+.check .st.fatto{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)} .check .st.na{opacity:.4}
+.check .name{font-weight:600} .check.na .name{text-decoration:line-through;color:var(--muted)} .check.fatto .name{color:var(--ink2)}
+/* ▲▼ nel foglietto della voce: l'ordine si cambia li', non sulla pagina */
+.ord{display:flex;align-items:center;gap:8px}
+.ord .obtn{width:48px;height:38px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink2);font-size:14px;line-height:1;padding:0;cursor:pointer}
+.ord .obtn:disabled{opacity:.3}
 .bar{height:10px;border-radius:5px;background:var(--line);overflow:hidden;margin-top:4px}
 .bar i{display:block;height:100%;border-radius:5px;background:var(--brand)}
 .barrow{margin:8px 0} .barrow .row{font-size:14px}
@@ -107,15 +109,9 @@ h1{font-size:22px;margin:6px 0 12px} h2{font-size:17px;margin:18px 0 8px} h3{fon
 .leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:6px}
 
-/* Pagina Trasferte: colore della carta per tipo di trasferta (torneo = bianco) */
-.card.t-qualifica{background:#eaf2fc;border-color:#cfe0f6}
-.card.t-casa{background:#e9f3ed;border-color:#c9e2d5}
-.card.t-altro{background:#fdf5e2;border-color:#f0e2bb}
-.leg.trip{margin:0 0 12px}
-.leg i.t-torneo{background:var(--card);border:1px solid var(--line)}
-.leg i.t-qualifica{background:#eaf2fc;border:1px solid #cfe0f6}
-.leg i.t-casa{background:#e9f3ed;border:1px solid #c9e2d5}
-.leg i.t-altro{background:#fdf5e2;border:1px solid #f0e2bb}
+/* Trasferte (T10 giro 4): il tipo e' un'etichetta sulla carta, non un colore con
+   la legenda; la trasferta che esiste solo nelle spese ha la carta tratteggiata */
+.card.virt{border:1px dashed var(--muted);background:transparent}
 
 /* Soldi › Spese: il campo di ricerca che il 🔍 fa comparire (T10 giro 3: la
    griglia di menu a tendina e' diventata una riga di pasticche, vedi .chips.scroll) */

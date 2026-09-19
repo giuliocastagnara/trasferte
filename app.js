@@ -10,9 +10,13 @@ const cfg = LS.get("cfg", { api: "", token: "", who: "" });
 let D = LS.get("data", null);                 // dati (boot)
 let queue = LS.get("queue", []);              // azioni in attesa (offline)
 let view = "oggi", viewArg = null, syncing = false, lastError = "";
-let checkOrdina = false;                      // modalità "riordina checklist" nella pagina trasferta
 const PERSONE = ["Giulio", "Alessandra"];
-const STATI = { da_fare: { ico: "", lab: "Da fare" }, prenotato: { ico: "📅", lab: "Prenotato" }, pagato: { ico: "✓", lab: "Pagato" }, na: { ico: "–", lab: "Non serve" } };
+// Stati della checklist (T10 giro 4, Q3): a video sono tre — da fare / fatto /
+// non serve — ma la tabella tiene anche "prenotato" e "pagato", i valori gia'
+// scritti sul foglio: tutti e due si leggono come FATTO, e "pagato" e' quello
+// che la spunta scrive. check.save non cambia.
+const STATI = { da_fare: { ico: "", lab: "Da fare" }, prenotato: { ico: "✓", lab: "Fatto" }, pagato: { ico: "✓", lab: "Fatto" }, na: { ico: "–", lab: "Non serve" } };
+const fattoCheck = c => c.stato === "pagato" || c.stato === "prenotato";
 const TIPI = { condivisa: "Condivisa", ciascuno: "Ognuno la sua parte", personale: "Personale", caddie: "Compenso caddie", regolamento: "Pagamento" };
 const CATS_COLORS = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
 
@@ -277,14 +281,13 @@ let navBack = [];
 function go(v, arg) {
   if (v === "altro") return apriAltro();
   if (ROTTE_VECCHIE[v]) { arg = ROTTE_VECCHIE[v][1]; v = ROTTE_VECCHIE[v][0]; }
-  if (v !== "trip" || arg !== viewArg) checkOrdina = false;
   if (v !== view || arg !== viewArg) { navBack.push({ v: view, a: viewArg }); if (navBack.length > 20) navBack.shift(); }
   view = v; viewArg = arg; render();
 }
 function indietro(def) {
   const b = navBack.pop();
   if (!b) return go(def || "oggi");
-  checkOrdina = false; view = b.v; viewArg = b.a; render();
+  view = b.v; viewArg = b.a; render();
 }
 document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "add") return formSpesa(); go(b.dataset.v); }));
 // L'ingranaggio in alto e il chip col nome (che prima non faceva niente) aprono
@@ -418,9 +421,11 @@ function trasferteVisibili() {
   return reali.concat(virtuali);
 }
 let trVirt = [];
-// Colore della carta per tipo di trasferta: torneo resta bianco.
-const TIPO_CARD = { qualifica: " t-qualifica", casa: " t-casa", altro: " t-altro" };
-const cardCls = tp => TIPO_CARD[String(tp || "").toLowerCase()] || "";
+// T10 giro 4 (§3.5): il tipo e' un'etichetta piccola sulla carta, non piu' il
+// colore della carta con una legenda a quattro voci. Torneo e' il caso normale.
+const TIPI_T = { torneo: "Torneo (settimana pagata)", qualifica: "Qualifica / Q-School (non pagata)", casa: "Casa", altro: "Altro" };
+const TAG_TIPO = { torneo: "", qualifica: " blue", casa: " grey", altro: " warn" };
+const tagTipo = tp => { const k = String(tp || "torneo").toLowerCase(); return `<span class="pill${k in TAG_TIPO ? TAG_TIPO[k] : " grey"}">${esc(k)}</span>`; };
 // Trasferte che esistono solo nelle spese: toccandole si crea la scheda,
 // cosi' diventano modificabili come tutte le altre. Il nome NON va cambiato:
 // le spese sono collegate alla trasferta per nome.
@@ -429,59 +434,146 @@ function creaScheda(i) {
   toast("Questa trasferta non ha ancora una scheda. Non cambiare il nome: le spese sono collegate per nome.", 5000);
   formTrip(null, { nome: t.nome, inizio: t.inizio, fine: t.fine, tipo: "altro" });
 }
+// "tra 12 giorni" · "in corso · 3 giorni al rientro" · "conclusa 5 giorni fa"
+const giorni = n => `${n} giorn${n === 1 ? "o" : "i"}`;
+function quandoTrip(t) {
+  if (!t.inizio || !t.fine) return "";
+  const a = giorniA(t.inizio), b = giorniA(t.fine);
+  if (a > 0) return `tra ${giorni(a)}`;
+  if (b < 0) return `conclusa ${giorni(-b)} fa`;
+  return b > 0 ? `in corso · ${giorni(b)} al rientro` : "in corso · ultimo giorno";
+}
+// In corso · Prossime · Passate. La regola di chi compare non cambia
+// (trasferteVisibili): almeno una spesa visibile, oppure nessuna spesa ancora.
+// Una trasferta virtuale senza date finisce fra le passate.
+function gruppiTrasferte() {
+  const all = trasferteVisibili(), oggi = today();
+  const corso = all.filter(t => t.inizio && t.inizio <= oggi && oggi <= t.fine).sort((a, b) => a.inizio < b.inizio ? -1 : 1);
+  const prossime = all.filter(t => t.inizio > oggi).sort((a, b) => a.inizio < b.inizio ? -1 : 1);
+  const passate = all.filter(t => !corso.includes(t) && !prossime.includes(t)).sort((a, b) => a.inizio < b.inizio ? 1 : -1);
+  return { all, corso, prossime, passate };
+}
+const annoTrip = t => String(t.anno || (t.inizio || "").slice(0, 4));
+let trAnno = "";
 function vTrasferte() {
-  const all = trasferteVisibili().sort((a, b) => a.inizio < b.inizio ? 1 : -1);
-  trVirt = all.filter(t => t.virtuale);
-  const years = [...new Set(all.map(t => String(t.anno || (t.inizio || "").slice(0, 4))))].sort().reverse();
-  const y = viewArg || years[0] || String(new Date().getFullYear());
-  let h = `<div class="row between"><h1>Trasferte</h1><button class="btn sm primary" onclick="formTrip()">＋ Nuova</button></div>
-    <div class="filters">${years.map(yy => `<button class="btn sm ${yy === y ? "primary" : ""}" onclick="go('trasferte','${yy}')">${yy}</button>`).join("")}</div>
-    <div class="leg trip"><span><i class="t-torneo"></i>Torneo</span><span><i class="t-qualifica"></i>Qualifica</span><span><i class="t-casa"></i>Casa</span><span><i class="t-altro"></i>Altro</span></div>`;
-  const list = all.filter(t => String(t.anno || (t.inizio || "").slice(0, 4)) === y);
-  if (!list.length) h += `<div class="empty">Nessuna trasferta per il ${y}</div>`;
-  list.forEach(t => {
-    if (t.virtuale) {
-      const tot = tripTotals(t.nome);
-      h += `<div class="card tap t-altro" onclick="creaScheda(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}</div></div>
-        <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${tot.n} spese</div></div></div></div>`;
-      return;
-    }
-    const cs = checkSummary(t.id), tot = tripTotals(t.nome), past = t.fine < today(), cur = currentTrip() && currentTrip().id === t.id;
-    h += `<div class="card tap${cardCls(t.tipo)}" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${cur ? '<span class="pill">in corso</span>' : ""}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}</div></div>
-      <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${past ? tot.n + " spese" : "checklist " + cs.done + "/" + cs.tot}</div></div></div></div>`;
-  });
+  const g = gruppiTrasferte(), oggi = today();
+  trVirt = g.all.filter(t => t.virtuale);
+  // l'anno vale solo per le passate: le altre sono poche e si vedono tutte
+  const anni = [...new Set(g.passate.map(annoTrip))].sort().reverse();
+  if (!trAnno || !anni.includes(trAnno)) trAnno = anni.includes(oggi.slice(0, 4)) ? oggi.slice(0, 4) : (anni[0] || oggi.slice(0, 4));
+  const lista = g.passate.filter(t => annoTrip(t) === trAnno);
+  let h = `<div class="row between"><h1>Trasferte</h1><button class="btn sm primary" onclick="formTrip()">＋ Nuova</button></div>`;
+  if (g.corso.length) h += `<h2>In corso</h2>` + g.corso.map(t => cardTrasferta(t, "corso")).join("");
+  h += `<h2>Prossime${g.prossime.length ? ` <span class="muted">(${g.prossime.length})</span>` : ""}</h2>`;
+  h += g.prossime.length ? g.prossime.map(t => cardTrasferta(t, "prossime")).join("") : `<div class="muted" style="margin-bottom:12px">Nessuna trasferta in programma.</div>`;
+  h += `<div class="row between"><h2>Passate${lista.length ? ` <span class="muted">(${lista.length})</span>` : ""}</h2>${anni.length ? `<button class="btn sm" onclick="scegliAnnoTrasferte()">${esc(trAnno)} ▾</button>` : ""}</div>`;
+  h += lista.length ? lista.map(t => cardTrasferta(t, "passate")).join("") : `<div class="muted">Nessuna trasferta passata nel ${esc(trAnno)}.</div>`;
   return h;
 }
+function scegliAnnoTrasferte() {
+  const n = {}; gruppiTrasferte().passate.forEach(t => { const y = annoTrip(t); n[y] = (n[y] || 0) + 1; });
+  const anni = Object.keys(n).sort().reverse();
+  sceltaFoglietto("Anno", anni.map(y => ({ v: y, lab: y, n: n[y] })), trAnno, v => { trAnno = v; render(); });
+}
+// La carta di una trasferta. Quella virtuale (solo nelle spese) e' tratteggiata
+// e tiene il suo "crea scheda".
+function cardTrasferta(t, gruppo) {
+  const tot = tripTotals(t.nome);
+  if (t.virtuale) return `<div class="card tap virt" onclick="creaScheda(${trVirt.indexOf(t)})"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> <span class="pill grey">senza scheda</span><div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)} · tocca per creare la scheda</div></div>
+      <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${tot.n} spes${tot.n === 1 ? "a" : "e"}</div></div></div></div>`;
+  const cs = checkSummary(t.id), q = gruppo === "passate" ? "" : quandoTrip(t);
+  const destra = gruppo === "passate" || !cs.tot ? `${tot.n} spes${tot.n === 1 ? "a" : "e"}` : `checklist ${cs.done}/${cs.tot}`;
+  return `<div class="card tap" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${tagTipo(t.tipo)}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${q ? " · " + q : ""}</div></div>
+    <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${destra}</div></div></div></div>`;
+}
 
+// ---- la pagina della trasferta (§3.5): una testata e quattro segmenti,
+// Checklist · Spese · Posta · Info, al posto di undici blocchi in fila.
+// La testata: date, quando, spese tue, checklist, e il conto di QUESTA trasferta
+// nella voce di chi legge (saldoTripIo, giro 3). Duplica ed Elimina stanno in Info.
+let tripSeg = "checklist", tripSegId = "", naAperte = false;
+const TRIP_SEG = { checklist: "Checklist", spese: "Spese", posta: "Posta", info: "Info" };
+function setTripSeg(s) { tripSeg = s; render(); }
 function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
-  const cs = tripChecks(t.id), tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
-  const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
-  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") byCat[s.categoria] = (byCat[s.categoria] || 0) + mioImporto(s); });
-  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
-    <div class="muted" style="margin:6px 0 12px">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${t.paese ? ", " + esc(t.paese) : ""} · ${t.valuta || "EUR"}${t.fuso ? " · " + esc(t.fuso) : ""}</div>
-    ${t.note ? `<div class="card small">${esc(t.note).replace(/\n/g, "<br>")}</div>` : ""}
-    <div class="row between"><h2>Checklist</h2><div class="row" style="gap:6px">${cs.length > 1 ? `<button class="btn sm ${checkOrdina ? "primary" : ""}" onclick="toggleOrdinaCheck()">⇅ ${checkOrdina ? "Fatto" : "Ordina"}</button>` : ""}<button class="btn sm" onclick="formCheck(null,'${t.id}')">＋ voce</button></div></div>
-    ${checkOrdina ? `<div class="muted" style="margin:-4px 0 8px">Sposta le voci con ▲▼. Tocca "Fatto" per tornare a usare la checklist.</div>` : ""}
-    <div class="card">${cs.length ? cs.map((c, i) => `<div class="check ${c.stato}">
-        ${checkOrdina
-          ? `<div class="ordbtn"><button class="obtn" ${i === 0 ? "disabled" : ""} onclick="spostaCheck('${t.id}','${c.id}',-1)">▲</button><button class="obtn" ${i === cs.length - 1 ? "disabled" : ""} onclick="spostaCheck('${t.id}','${c.id}',1)">▼</button></div>`
-          : `<div class="st ${c.stato}" onclick="cycleCheck('${c.id}')">${STATI[c.stato]?.ico || ""}</div>`}
-        <div class="grow" ${checkOrdina ? "" : `onclick="formCheck('${c.id}')"`}><div class="name">${esc(c.voce)} ${c.chi ? `<span class="muted">· ${esc(c.chi)}</span>` : ""}</div>
-          <div class="muted">${STATI[c.stato]?.lab || ""}${c.codice ? " · " + esc(c.codice) : ""}${c.note ? " · " + esc(c.note) : ""}</div></div>
-        ${checkOrdina ? "" : bottoniVoce(c)}
-      </div>`).join("") : `<div class="muted">Nessuna voce</div>`}</div>
-    ${cs.some(c => prenDiVoce(c.id)) ? `<div class="muted" style="margin:6px 0 0">✉️ apre la mail della prenotazione · 📄 il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella pagina Prenotazioni.</div>` : ""}
-    <h2>Spese</h2>
-    <div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Libri Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Libri Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
+  // una trasferta passata si apre sulle spese: la sua checklist ha gia' fatto il suo
+  if (tripSegId !== t.id) { tripSegId = t.id; naAperte = false; tripSeg = t.fine && t.fine < today() ? "spese" : "checklist"; }
+  const cs = checkSummary(t.id), tot = tripTotals(t.nome);
+  const carte = postaCarte().filter(c => c.trip === t.nome);
+  // sui segmenti solo i numeri che vogliono dire "da fare"
+  const n = { checklist: cs.open.length, posta: carte.filter(c => c.seg === "da_fare").length };
+  const q = quandoTrip(t);
+  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="btn sm" onclick="tripAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
+    <div class="card head" style="margin-top:12px">
+      <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}</div>
+      ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
+      <div class="kp"><div><b>${eur(tot.mio)}</b><span>Spese tue</span></div><div><b>${cs.tot ? cs.done + "/" + cs.tot : "—"}</b><span>Checklist</span></div></div>
+      <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>
+    </div>
+    <div class="seg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
+  return h + ({ checklist: tripChecklistSeg, spese: tripSpeseSeg, posta: tripPostaSeg, info: tripInfoSeg }[tripSeg] || tripChecklistSeg)(t, carte);
+}
+// Checklist: le voci vive sopra, le "non serve" chiuse sotto (sono 171 su 216,
+// §1 del ticket: a video erano solo rumore).
+function tripChecklistSeg(t) {
+  const cs = tripChecks(t.id), attive = cs.filter(c => c.stato !== "na"), na = cs.filter(c => c.stato === "na");
+  let h = `<div class="row between"><h2 style="margin-top:6px">Checklist</h2><button class="btn sm" onclick="formCheck(null,'${t.id}')">＋ voce</button></div>
+    <div class="card">${attive.length ? attive.map(rigaCheck).join("") : `<div class="muted">${cs.length ? "Niente da fare: è tutto “non serve”." : "Nessuna voce. Aggiungine una con ＋ voce."}</div>`}</div>`;
+  if (na.length) h += `<div class="card" style="padding-top:10px;padding-bottom:10px"><div class="row between tap" onclick="naAperte=!naAperte;render()"><span class="muted">Non serve · ${na.length}</span><span class="muted">${naAperte ? "▴" : "▾"}</span></div>${naAperte ? `<div style="margin-top:4px">${na.map(rigaCheck).join("")}</div>` : ""}</div>`;
+  return h;
+}
+// Una riga: il cerchio e' la spunta (un tocco = una scrittura, fatto ⇄ da fare),
+// il resto della riga apre il foglietto della voce. Su una voce "non serve" anche
+// il cerchio apre il foglietto: rimetterla in gioco e' una scelta, non un tocco di
+// passaggio. ✉️ e 📄 (T2) restano a destra: prima la mail, poi il PDF, che si
+// apre anche in aereo.
+function rigaCheck(c) {
+  const na = c.stato === "na", f = fattoCheck(c);
+  const sotto = [c.codice, c.note].filter(Boolean).map(esc).join(" · ");
+  return `<div class="check ${na ? "na" : f ? "fatto" : "da_fare"}">
+    <div class="st" onclick="${na ? `formCheck('${c.id}')` : `segnaCheck('${c.id}',${f ? "false" : "true"})`}">${STATI[c.stato]?.ico || ""}</div>
+    <div class="grow" onclick="formCheck('${c.id}')"><div class="name">${esc(c.voce)}${c.chi ? ` <span class="muted">· ${esc(c.chi)}</span>` : ""}</div>${sotto ? `<div class="muted ellipsis">${sotto}</div>` : ""}</div>
+    ${bottoniVoce(c)}</div>`;
+}
+function tripSpeseSeg(t) {
+  const tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
+  const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") { const k = catBreve(s.categoria); byCat[k] = (byCat[k] || 0) + mioImporto(s); } });
+  return `<div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Libri Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Libri Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
     ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
     <div class="card list">${ss.length ? ss.map(s => itemSpesa(s, true)).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
-    <button class="btn block" onclick="formSpesa(null,'${esc(t.nome)}')">＋ Spesa per questa trasferta</button>
-    ${bookingsSection(t)}
-    <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
-    <div class="card" onclick="formNota('${esc(baseName(t.nome))}')">${nota && nota.testo ? esc(nota.testo).replace(/\n/g, "<br>") : `<span class="muted">Hotel che vi è piaciuto, distanza dal campo, dove fare la spesa… tocca per scrivere</span>`}</div>
-    <div class="row" style="margin-top:14px;gap:8px"><button class="btn grow" onclick="duplicaTrip('${t.id}')">Duplica per l'anno prossimo</button><button class="btn danger" onclick="delTrip('${t.id}')">Elimina</button></div>`;
+    <button class="btn block" onclick="spesaPerTrip('${t.id}')">＋ Spesa per questa trasferta</button>`;
+}
+// Dall'id, non dal nome: un nome con l'apostrofo dentro un onclick si spaccherebbe.
+function spesaPerTrip(id) { const t = (D.trasferte || []).find(x => x.id === id); if (t) formSpesa(null, t.nome); }
+function notaTrip(id) { const t = (D.trasferte || []).find(x => x.id === id); if (t) formNota(baseName(t.nome)); }
+// Posta: le carte di questa trasferta, le stesse di vPosta con gli stessi bottoni.
+function tripPostaSeg(t, carte) {
+  const aperte = carte.filter(c => c.seg === "da_fare"), fatte = carte.filter(c => c.seg === "fatte");
+  if (!aperte.length && !fatte.length) return `<div class="empty">Nessuna mail per questa trasferta.<br><span class="small">Quello che il lettore trova arriva qui e in Posta.</span></div>`;
+  let h = "";
+  if (aperte.length) h += `<h2 style="margin-top:6px">Da fare <span class="muted">(${aperte.length})</span></h2>` + aperte.map(cardPosta).join("");
+  if (fatte.length) h += `<h2>Fatte <span class="muted">(${fatte.length})</span></h2>` + fatte.map(cardPosta).join("");
   return h;
+}
+function tripInfoSeg(t) {
+  const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
+  const righe = [["Tipo", TIPI_T[String(t.tipo || "torneo").toLowerCase()] || t.tipo], ["Città", t.citta], ["Paese", t.paese], ["Valuta", t.valuta || "EUR"], ["Fuso", t.fuso], ["Budget", t.budget ? eur(t.budget) : ""], ["Intercontinentale", t.intercontinentale === "si" ? "sì" : "no"]].filter(r => r[1]);
+  return `<h2 style="margin-top:6px">Scheda</h2><div class="card tap" onclick="formTrip('${t.id}')">${righe.map(r => `<div class="row between" style="padding:3px 0"><span class="muted">${r[0]}</span><span>${esc(r[1])}</span></div>`).join("")}</div>
+    <h2>Note</h2><div class="card tap" onclick="formTrip('${t.id}')">${t.note ? esc(t.note).replace(/\n/g, "<br>") : `<span class="muted">Indirizzo dell'alloggio, targa dell'auto, contatti… tocca per scrivere</span>`}</div>
+    <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
+    <div class="card tap" onclick="notaTrip('${t.id}')">${nota && nota.testo ? esc(nota.testo).replace(/\n/g, "<br>") : `<span class="muted">Hotel che vi è piaciuto, distanza dal campo, dove fare la spesa… tocca per scrivere</span>`}</div>
+    <div class="row" style="margin-top:14px;gap:8px"><button class="btn grow" onclick="duplicaTrip('${t.id}')">Duplica per l'anno prossimo</button><button class="btn danger" onclick="delTrip('${t.id}')">Elimina</button></div>`;
+}
+// Le regole della pagina, dietro il "?" (ADR-4): prima stavano in un paragrafo
+// sotto la checklist.
+function tripAiuto() {
+  openModal(`<h2 style="margin-top:0">Come funziona la trasferta</h2>
+    <p class="small"><b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.</p>
+    <p class="small">Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.</p>
+    <p class="small"><b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.</p>
+    <p class="small"><b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.</p>
+    <p class="small">Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.</p>
+    <button class="btn block" onclick="closeModal()">Chiudi</button>`);
 }
 
 function bars(obj, total) {
@@ -744,7 +836,8 @@ function vImpostazioni() {
   return `<div class="row"><button class="btn sm" onclick="indietro('oggi')">‹</button><h1 class="grow" style="margin:0">Impostazioni</h1></div>
     <h2>Report per il commercialista</h2><div class="card"><div class="row" style="gap:8px"><select id="repAnno">${[...new Set((D.spese || []).map(x => String(x.data).slice(0, 4)))].sort().reverse().map(y => `<option>${y}</option>`).join("")}</select><select id="repChi"><option>Alessandra</option><option>Giulio</option></select><button class="btn primary grow" onclick="makeReport()">Genera foglio</button></div><div class="muted" style="margin-top:6px">Crea un Google Sheet con dettaglio + riepilogo per categoria e trasferta.</div></div>
     <h2>Categorie <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setCat" style="width:100%;min-height:160px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc((s.categorie || []).join("\n"))}</textarea></div>
-    <h2>Checklist di default <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChk" style="width:100%;min-height:120px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc((s.checklist_template || []).join("\n"))}</textarea></div>
+    <h2>Checklist per un torneo <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChkT" style="width:100%;min-height:120px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc(templateChecklist("torneo").join("\n"))}</textarea></div>
+    <h2>Checklist per una qualifica <span class="muted">(una per riga)</span></h2><div class="card"><textarea id="setChkQ" style="width:100%;min-height:90px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)">${esc(templateChecklist("qualifica").join("\n"))}</textarea><div class="muted" style="margin-top:6px">Vale per le trasferte nuove. Casa e Altro nascono senza checklist.</div></div>
     <h2>Valute <span class="muted">(separate da virgola)</span></h2><div class="card"><input id="setVal" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--bg)" value="${esc((s.valute || []).join(", "))}"></div>
     <button class="btn primary block" onclick="saveSettings()">Salva impostazioni</button>
     <h2>Collegamento</h2><div class="card">
@@ -760,7 +853,9 @@ function scollegaApp() {
 }
 function scollegaOra() { closeModal(); cfg.api = ""; cfg.token = ""; LS.set("cfg", cfg); render(); }
 async function saveSettings() {
-  const p = { categorie: $("#setCat").value.split("\n").map(x => x.trim()).filter(Boolean), checklist_template: $("#setChk").value.split("\n").map(x => x.trim()).filter(Boolean), valute: $("#setVal").value.split(",").map(x => x.trim().toUpperCase()).filter(Boolean) };
+  const righe = id => $(id).value.split("\n").map(x => x.trim()).filter(Boolean);
+  // le due liste hanno la loro chiave (Q4); checklist_template resta sul foglio come ripiego del torneo
+  const p = { categorie: righe("#setCat"), checklist_template_torneo: righe("#setChkT"), checklist_template_qualifica: righe("#setChkQ"), valute: $("#setVal").value.split(",").map(x => x.trim().toUpperCase()).filter(Boolean) };
   await write("settings.save", p, d => Object.assign(d.settings, p)); toast("Impostazioni salvate");
 }
 async function makeReport() {
@@ -899,24 +994,9 @@ function prenRighe(p) {
   ].filter(Boolean).join(" · "));
   return d.testo ? [d.testo] : [];
 }
-function bookingsSection(t) {
-  const pren = visiblePren().filter(p => p.trasferta_id === t.id);
-  const nuove = pren.filter(p => p.stato === "nuova"), fatte = pren.filter(p => p.stato === "collegata");
-  if (!nuove.length && !fatte.length) return "";
-  let h = "";
-  if (nuove.length) h += `<h2>Trovate nella mail <span class="muted">(${nuove.length})</span></h2><div class="card list">${nuove.map(p => itemPren(p)).join("")}</div>`;
-  if (fatte.length) h += `<h2>Già collegate <span class="muted">(${fatte.length})</span></h2>
-    <div class="card list">${fatte.map(p => `<div class="item"><div class="thumb">✓</div><div class="grow"><div class="ellipsis">${esc(p.oggetto)}</div><div class="dett">${esc(prenQuando(p))}</div>
-      ${p.link || pdfPren(p) ? `<div class="muted">${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">sito del fornitore</a>` : ""}${p.link && pdfPren(p) ? " · " : ""}${pdfPren(p) ? `<a href="${esc(pdfPren(p))}" target="_blank" rel="noopener">PDF</a>` : ""}</div>` : ""}</div><button class="btn sm" onclick="scollegaPren('${p.id}')">Scollega</button></div>`).join("")}</div>
-    <div class="muted" style="margin-top:6px">"Scollega" la rimette fra quelle da collegare: serve se hai collegato la voce sbagliata o se hai cancellato le note qui sopra.</div>`;
-  return h;
-}
-function itemPren(p) {
-  const righe = prenRighe(p);
-  return `<div class="item"><div class="thumb">${(TIPO_PREN[p.tipo] || "📧").slice(0, 2)}</div><div class="grow"><div class="ellipsis"><b>${esc(p.oggetto)}</b></div>
-    ${righe.length ? righe.map(r => `<div class="dett">${esc(r)}</div>`).join("") : `<div class="dett">${esc(prenQuando(p))}</div>`}
-    <div class="muted ellipsis">${esc(p.mittente)}${p.codice ? " · " + esc(p.codice) : ""}${p.importo ? " · " + num(p.importo) + " " + esc(p.valuta) : ""}</div></div><button class="btn sm primary" onclick="formPren('${p.id}')">Collega</button></div>`;
-}
+// (bookingsSection e itemPren, le due liste di prenotazioni in fondo alla pagina
+// della trasferta, non ci sono piu': T10 giro 4 le ha sostituite col segmento
+// Posta, che usa le carte di vPosta.)
 // La prenotazione resta in memoria come "ignorata" così puoi ripensarci subito;
 // il server non la rimanda più al prossimo caricamento.
 // write() e non api(): senza rete la modifica si vede subito e parte dalla coda
@@ -1653,7 +1733,6 @@ const toB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onl
 function formTrip(id, preset) {
   const ex = id ? (D.trasferte || []).find(t => t.id === id) : null;
   const t = ex ? Object.assign({}, ex) : Object.assign({ nome: "", inizio: today(), fine: today(), citta: "", paese: "", valuta: "EUR", fuso: "", note: "", budget: "", tipo: "torneo", intercontinentale: "" }, preset || {});
-  const TIPI_T = { torneo: "Torneo (settimana pagata)", qualifica: "Qualifica / Q-School (non pagata)", casa: "Casa", altro: "Altro" };
   const vals = D.settings.valute || ["EUR"];
   openModal(`<h2 style="margin-top:0">${ex ? "Modifica" : "Nuova"} trasferta</h2>
     <div class="field"><label>Nome (es. Irish Open 2027)</label><input id="tNome" value="${esc(t.nome)}"></div>
@@ -1671,7 +1750,7 @@ function formTrip(id, preset) {
     if (!t.nome) return toast("Dai un nome alla trasferta"); if (t.fine < t.inizio) return toast("La fine è prima dell'inizio");
     t.anno = t.inizio.slice(0, 4); const isNew = !t.id; if (isNew) t.id = uid();
     closeModal();
-    const res = await write("trasferta.save", t, d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); (d.settings.checklist_template || []).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
+    const res = await write("trasferta.save", t, d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); templateChecklist(t.tipo).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
     if (isNew) go("trip", t.id);
     if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); render(); }
   });
@@ -1684,9 +1763,17 @@ function duplicaTrip(id) {
   formTrip(null, { nome: /\b20\d\d\b/.test(t.nome) ? t.nome.replace(/\b20\d\d\b/, y) : t.nome + " " + y, inizio: shift(t.inizio), fine: shift(t.fine), citta: t.citta, paese: t.paese, valuta: t.valuta, fuso: t.fuso, note: t.note, budget: t.budget, tipo: t.tipo, intercontinentale: t.intercontinentale });
 }
 
-// ---------------------------------------------------------------- CHECKLIST
-function toggleOrdinaCheck() { checkOrdina = !checkOrdina; render(); }
+// La checklist con cui nasce una trasferta, per tipo (Q4). Il server fa lo stesso
+// conto (templateChecklist_): qui serve a vederla subito, prima della risposta, e
+// alla pagina Impostazioni. Il ripiego su checklist_template copre un boot vecchio.
+function templateChecklist(tipo) {
+  const s = D.settings || {}, k = String(tipo || "torneo").toLowerCase();
+  if (k === "torneo") return s.checklist_template_torneo || s.checklist_template || [];
+  if (k === "qualifica") return s.checklist_template_qualifica || [];
+  return [];
+}
 
+// ---------------------------------------------------------------- CHECKLIST
 // Sposta una voce di una posizione e rinumera tutta la checklist della trasferta.
 async function spostaCheck(tripId, id, dir) {
   const cs = tripChecks(tripId);
@@ -1699,22 +1786,40 @@ async function spostaCheck(tripId, id, dir) {
   });
 }
 
-async function cycleCheck(id) {
+// La spunta (Q3): un tocco = una scrittura, ed e' quella che volevi. Prima il
+// cerchio girava su quattro stati e ogni giro era una scrittura — tre sbagliate
+// per rimediare a una. Il valore scritto per "fatto" e' "pagato", lo stesso che
+// il foglio ha sempre avuto: check.save non cambia.
+async function segnaCheck(id, fatto) {
   const c = (D.checklist || []).find(x => x.id === id); if (!c) return;
-  const order = ["da_fare", "prenotato", "pagato", "na"]; c.stato = order[(order.indexOf(c.stato) + 1) % order.length];
+  c.stato = fatto ? "pagato" : "da_fare";
   await write("check.save", Object.assign({}, c), () => {});
 }
+// I tre stati che si scelgono nel foglietto. "prenotato" non si sceglie piu':
+// una voce vecchia che ce l'ha accende "Fatto" e, se non la si tocca, lo tiene.
+const STATI_SCELTA = { da_fare: "Da fare", pagato: "Fatto", na: "Non serve" };
 function formCheck(id, tripId) {
   const ex = id ? (D.checklist || []).find(c => c.id === id) : null;
   const c = ex ? Object.assign({}, ex) : { trasferta_id: tripId, voce: "", stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: tripChecks(tripId).length + 1 };
+  const accesa = k => (k === "pagato" ? fattoCheck(c) : c.stato === k) ? "on" : "";
+  const cs = ex ? tripChecks(ex.trasferta_id) : [], pos = ex ? cs.findIndex(x => x.id === ex.id) : -1;
   openModal(`<h2 style="margin-top:0">${ex ? "Voce checklist" : "Nuova voce"}</h2>
     <div class="field"><label>Cosa</label><input id="cVoce" value="${esc(c.voce)}" placeholder="es. Volo andata"></div>
-    <div class="field"><label>Stato</label><div class="seg" id="segSt">${Object.keys(STATI).map(k => `<button data-v="${k}" class="${c.stato === k ? "on" : ""}">${STATI[k].lab}</button>`).join("")}</div></div>
+    <div class="field"><label>Stato</label><div class="seg" id="segSt">${Object.keys(STATI_SCELTA).map(k => `<button data-v="${k}" class="${accesa(k)}">${STATI_SCELTA[k]}</button>`).join("")}</div></div>
     <div class="field"><label>Link prenotazione</label><input id="cLink" value="${esc(c.link)}" placeholder="https://…" inputmode="url"></div>
     <div class="cols"><div class="field"><label>Codice / PNR</label><input id="cCod" value="${esc(c.codice)}"></div><div class="field"><label>Se ne occupa</label><select id="cChi"><option value="">—</option>${PERSONE.map(p => `<option ${c.chi === p ? "selected" : ""}>${p}</option>`).join("")}</select></div></div>
     <div class="field"><label>Note</label><input id="cNote" value="${esc(c.note)}"></div>
+    ${ex && cs.length > 1 ? `<div class="field"><label>Posizione nella checklist</label><div class="ord"><button class="obtn" id="cSu" ${pos <= 0 ? "disabled" : ""}>▲</button><button class="obtn" id="cGiu" ${pos >= cs.length - 1 ? "disabled" : ""}>▼</button><span class="muted" id="cPos">${pos + 1} di ${cs.length}</span></div></div>` : ""}
     <div class="row" style="gap:8px"><button class="btn primary grow" id="cSave">Salva</button>${ex ? `<button class="btn danger" id="cDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
   $("#segSt").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; $("#segSt").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); c.stato = b.dataset.v; });
+  // ▲▼ scrivono subito (check.ordina, come prima) e il foglietto resta aperto: si
+  // aggiorna solo il numero. c.ordine segue, se no Salva riporterebbe la voce dov'era.
+  if (ex && cs.length > 1) ["cSu", "cGiu"].forEach((bid, i) => $("#" + bid).addEventListener("click", async () => {
+    await spostaCheck(ex.trasferta_id, ex.id, i ? 1 : -1);
+    const arr = tripChecks(ex.trasferta_id), p = arr.findIndex(x => x.id === ex.id);
+    c.ordine = p + 1;
+    if ($("#cPos")) { $("#cPos").textContent = `${p + 1} di ${arr.length}`; $("#cSu").disabled = p <= 0; $("#cGiu").disabled = p >= arr.length - 1; }
+  }));
   $("#cSave").addEventListener("click", async () => {
     c.voce = $("#cVoce").value.trim(); c.link = $("#cLink").value.trim(); c.codice = $("#cCod").value.trim(); c.chi = $("#cChi").value; c.note = $("#cNote").value.trim();
     if (!c.voce) return toast("Scrivi cosa"); if (c.link && !/^https?:\/\//i.test(c.link)) c.link = "https://" + c.link;
