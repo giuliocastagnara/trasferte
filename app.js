@@ -1261,7 +1261,25 @@ async function ripristinaProposta(id) {
 // vPrenotazioni e vProposte, tenute un giro per sicurezza, sono state tolte nel giro 3.
 let postaSeg = "da_fare";
 const POSTA_SEG = { da_fare: "Da fare", fatte: "Fatte", ignorate: "Ignorate" };
-function setPostaSeg(s) { postaSeg = s; render(); }
+function setPostaSeg(s) { postaSeg = s; render(); if (s === "ignorate") caricaIgnorate(); }
+// T11: il boot non manda le righe ignorate (sono quasi tutte il registro del lettore),
+// quindi "Ignorate" le chiede al server solo quando lo apri: `posta.ignorate` risponde con
+// le sole righe ignorate da una persona. Si fondono in memoria, cosi' "Ripristina" e' il
+// write() di sempre; una scansione le rimette via, riaprire il segmento le richiede.
+let ignorateStato = "";   // "" | "carico" | "ok" | "offline" | "errore"
+async function caricaIgnorate() {
+  if (ignorateStato === "carico") return;
+  if (!navigator.onLine) { ignorateStato = "offline"; render(); return; }
+  ignorateStato = "carico"; render();
+  try {
+    const r = await api("posta.ignorate");
+    const fondi = (lista, righe) => { (righe || []).forEach(x => { const i = lista.findIndex(y => y.id === x.id); if (i >= 0) lista[i] = x; else lista.push(x); }); return lista; };
+    D.prenotazioni = fondi(D.prenotazioni || [], r.prenotazioni);
+    D.proposte = fondi(D.proposte || [], r.proposte);
+    LS.set("data", D); ignorateStato = "ok";
+  } catch (e) { ignorateStato = "errore"; toast("Non riesco a leggere le ignorate: " + e.message, 4000); }
+  render();
+}
 const SUGG_PREN = { volo: ["Volo andata", "Volo ritorno"], alloggio: ["Alloggio"], auto: ["Auto"], treno: ["Treno"], altro: [] };
 
 // Trasferta indovinata dalla data: quella le cui date CONTENGONO quel giorno.
@@ -1478,13 +1496,17 @@ function vPosta() {
     <div class="seg" style="margin:12px 0">${Object.keys(POSTA_SEG).map(k => `<button class="${postaSeg === k ? "on" : ""}" onclick="setPostaSeg('${k}')">${POSTA_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
   if (postaSeg === "da_fare" && daFare.length) h += `<div class="muted" style="margin:-4px 0 10px">${daFare.length} cos${daFare.length === 1 ? "a" : "e"} da sistemare${tot ? " · " + eur(tot) + " di ricevute" : ""}</div>`;
   const lista = carte.filter(c => c.seg === postaSeg);
-  if (!lista.length) return h + `<div class="empty">${postaSeg === "da_fare" ? "Niente da sistemare. Premi “Scansiona” per cercare adesso." : postaSeg === "fatte" ? "Ancora niente di fatto." : "Niente di ignorato in questa sessione."}</div>`;
+  if (postaSeg === "ignorate") {
+    const riga = { carico: "Chiedo al server le mail ignorate…", offline: "Senza rete: qui vedi solo quelle ignorate in questa sessione.", errore: "Il server non ha risposto: qui vedi solo quelle ignorate in questa sessione." }[ignorateStato] || "";
+    if (riga) h += `<div class="muted" style="margin:-4px 0 10px">${riga}</div>`;
+  }
+  if (!lista.length) return h + `<div class="empty">${postaSeg === "da_fare" ? "Niente da sistemare. Premi “Scansiona” per cercare adesso." : postaSeg === "fatte" ? "Ancora niente di fatto." : ignorateStato === "carico" ? "" : "Niente di ignorato."}</div>`;
   // Gruppi per trasferta: l'ordine e' quello della mail piu' recente del gruppo,
   // cosi' le 40 ricevute si smaltiscono una trasferta alla volta.
   const gruppi = [], idx = {};
   lista.forEach(c => { const k = c.trip || ""; if (!(k in idx)) { idx[k] = gruppi.length; gruppi.push({ k: k, carte: [] }); } gruppi[idx[k]].carte.push(c); });
   gruppi.forEach(g => { h += `<h2>${g.k ? esc(g.k) : "Senza trasferta"} <span class="muted">(${g.carte.length})</span></h2>` + g.carte.map(cardPosta).join(""); });
-  if (postaSeg === "ignorate") h += `<div class="muted">Solo quelle ignorate adesso: al prossimo caricamento dell'app spariscono da qui, il server non le rimanda più.</div>`;
+  if (postaSeg === "ignorate" && ignorateStato === "ok") h += `<div class="muted">Sono le mail ignorate da te. Quelle scartate dal lettore (marketing, promemoria, senza importo) non ci sono: per riportarne una in vita si passa da "Scansiona".</div>`;
   return h;
 }
 function postaAiuto() {
