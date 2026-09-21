@@ -286,6 +286,22 @@ function tripChecks(id) { return (D.checklist || []).filter(c => c.trasferta_id 
 function tripSpese(nome) { return visibleSpese().filter(s => s.trasferta === nome); }
 function tripTotals(nome) { const ss = tripSpese(nome); const ale = ss.reduce((a, s) => a + (+s.libri_ale || 0), 0), giu = ss.reduce((a, s) => a + (+s.libri_giulio || 0), 0);
   return { ale, giu, mio: cfg.who === "Giulio" ? giu : ale, n: ss.length }; }
+// T12 §2.2 — il netto di una settimana, nella voce di chi legge.
+// USCITE: la tua quota di tutto quello che è uscito, **compreso il compenso
+// caddie** — per Alessandra pagarlo è un costo vero della settimana (deciso il
+// 21 set 2026). Fuori solo i `regolamento`, che spostano il conto e non sono una
+// spesa. Per Giulio non cambia niente: una riga caddie ha `libri_giulio` 0.
+// ⚠ NON è `mieSpese()`, e le due non vanno unite: quella serve alla lista Spese e
+// al badge "manca lo scontrino", e una riga caddie uno scontrino suo non ce l'ha
+// (la fattura sta sul `regolamento` che la paga). Stessa base in soldiAnnoSeg e
+// nel KPI "Netto" di Soldi: se cambia una, cambiano tutte.
+const uscitaMia = ss => Math.round(ss.filter(s => s.tipo !== "regolamento").reduce((a, s) => a + mioImporto(s), 0) * 100) / 100;
+// ENTRATE della settimana: per Giulio il compenso (`totale`), per Alessandra il
+// montepremi. Stessa regola di entrateTutte().
+function entrataTrip(t) {
+  const c = (D.compensi || []).find(x => x.trasferta_id === t.id);
+  return c ? Math.round((cfg.who === "Giulio" ? (+c.totale || 0) : (+c.montepremi || 0)) * 100) / 100 : 0;
+}
 function checkSummary(id) { const cs = tripChecks(id).filter(c => c.stato !== "na"); const done = cs.filter(c => c.stato === "prenotato" || c.stato === "pagato").length; return { done, tot: cs.length, open: cs.filter(c => c.stato === "da_fare") }; }
 
 // ---------------------------------------------------------------- render
@@ -550,8 +566,18 @@ function cardTrasferta(t, gruppo) {
       <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${tot.n} spes${tot.n === 1 ? "a" : "e"}</div></div></div></div>`;
   const cs = checkSummary(t.id), q = gruppo === "passate" ? "" : quandoTrip(t);
   const destra = gruppo === "passate" || !cs.tot ? `${tot.n} spes${tot.n === 1 ? "a" : "e"}` : `checklist ${cs.done}/${cs.tot}`;
+  // Sulle passate il numero grande e' il NETTO della settimana, non la tua quota di
+  // spesa: "ha guadagnato o ha perso" e' la domanda vera una volta finita. Fuori le
+  // trasferte casa/altro, dove un netto non vuol dire niente, e fuori le in corso e
+  // le prossime, dove il compenso spesso non esiste ancora e il netto direbbe solo
+  // una perdita. Sotto resta quanto ti e' costata.
+  const gara = !["casa", "altro"].includes(String(t.tipo || "").toLowerCase());
+  const destraSoldi = gruppo === "passate" && gara
+    ? (() => { const u = uscitaMia(tripSpese(t.nome)), n = Math.round((entrataTrip(t) - u) * 100) / 100;
+        return `<div class="amt ${n < 0 ? "out" : "in"}">${n < 0 ? "−" : "+"}${eur(Math.abs(n))}</div><div class="muted">costo ${eur(u)}</div>`; })()
+    : `<div class="amt">${eur(tot.mio)}</div><div class="muted">${destra}</div>`;
   return `<div class="card tap" onclick="go('trip','${t.id}')"><div class="row between"><div class="grow"><b>${esc(t.nome)}</b> ${tagTipo(t.tipo)}<div class="muted">${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""}${q ? " · " + q : ""}</div></div>
-    <div style="text-align:right"><div class="amt">${eur(tot.mio)}</div><div class="muted">${destra}</div></div></div></div>`;
+    <div style="text-align:right">${destraSoldi}</div></div></div>`;
 }
 
 // ---- la pagina della trasferta (§3.5): una testata e quattro segmenti,
@@ -700,9 +726,12 @@ function vSoldi() {
   const years = anniSoldi();
   if (!soldiAnno || !years.includes(soldiAnno)) soldiAnno = years.includes(today().slice(0, 4)) ? today().slice(0, 4) : (years[0] || today().slice(0, 4));
   const y = soldiAnno, s = saldoTot();
-  // Spese tue = la quota a tuo carico (mioImporto), fuori i compensi e i pagamenti:
-  // e' la stessa somma della lista Spese e della vecchia carta "Spese <chi guarda>".
-  const out = Math.round(mieSpese().filter(x => String(x.data).startsWith(y)).reduce((a, x) => a + mioImporto(x), 0) * 100) / 100;
+  // Spese tue = la quota a tuo carico (mioImporto), fuori i pagamenti. Dal 21 set
+  // il compenso caddie ci sta DENTRO (uscitaMia), se no questo "Netto" non sarebbe
+  // la somma dei netti delle trasferte. Per Giulio e' identico a prima.
+  // ⚠ Per Alessandra questo numero e' quindi piu' alto del totale della lista
+  // Spese, che le righe caddie non le mostra: la ragione sta nel "?".
+  const out = uscitaMia(visibleSpese().filter(x => String(x.data).startsWith(y)));
   const inc = Math.round(entrateAnno(y).reduce((a, c) => a + c.val, 0) * 100) / 100;
   const labIn = cfg.who === "Giulio" ? "Compensi" : "Vincite";
   let h = `<div class="row"><h1 class="grow" style="margin:0">Soldi</h1><button class="ask" onclick="soldiAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="scegliAnnoSoldi()">${esc(y)} ▾</button></div>
@@ -719,6 +748,7 @@ function scegliAnnoSoldi() {
 function soldiAiuto() {
   const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
   aiutoFoglietto("Come funziona Soldi", [
+    `<b>Netto</b> è entrate meno quello che la settimana ti è costata, ed è il numero sulla carta di una trasferta passata. ${cfg.who === "Giulio" ? "Le righe <i>compenso caddie</i> non ti costano niente, quindi non lo spostano." : "Il <b>compenso caddie</b> ci sta dentro: pagarlo è un costo vero della settimana. Per questo è più alto del totale della lista <i>Spese</i>, che quelle righe non le mostra — sono generate dal compenso e la fattura sta sul pagamento."}`,
     `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista.`,
     `<b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.`,
     `<b>Compensi</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.`,
@@ -868,7 +898,9 @@ function soldiAnnoSeg() {
   const tipi = tipiTrasferta();
   // USCITE: la quota a carico di chi guarda (stessa regola della pagina trasferta)
   const byTrip = {}, byCat = {}, byMonth = {};
-  ss.filter(s => s.tipo !== "caddie").forEach(s => { const v = mioImporto(s);
+  // il compenso caddie sta fra le uscite: per Alessandra e' un costo vero della
+  // settimana, per Giulio vale 0. Stessa base di uscitaMia e del KPI "Netto".
+  ss.forEach(s => { const v = mioImporto(s);
     byTrip[s.trasferta] = (byTrip[s.trasferta] || 0) + v;
     byCat[s.categoria] = (byCat[s.categoria] || 0) + v;
     const m = String(s.data).slice(0, 7); byMonth[m] = (byMonth[m] || 0) + v; });
