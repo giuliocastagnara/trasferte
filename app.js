@@ -608,8 +608,21 @@ function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
   // una trasferta passata si apre sulle spese: la sua checklist ha gia' fatto il suo
   if (tripSegId !== t.id) { tripSegId = t.id; naAperte = false; tripSeg = t.fine && t.fine < today() ? "spese" : "checklist"; }
-  const cs = checkSummary(t.id), tot = tripTotals(t.nome);
+  const cs = checkSummary(t.id);
   const carte = postaCarte().filter(c => c.trip === t.nome);
+  // T12 §4: le due piastrelle di prima erano "Spese tue" e "Checklist". La prima
+  // era lo STESSO numero di "Libri <te>" un tocco piu' in la' (tripTotals ritorna
+  // mio = giu o ale) e dal v40 anche del "costo" sulla carta: tre volte lo stesso
+  // importo. La seconda, su una passata, diceva "—" 17 volte su 22.
+  // Adesso: Netto · Entrate · Costo tuo, sempre tre e sempre in quest'ordine.
+  // Netto ed Entrate restano "—" finche' la settimana non è chiusa o il compenso
+  // non c'è: prima direbbero solo "sei in perdita" perche' il compenso non è
+  // ancora stato scritto. Su casa/altro non vogliono dire niente e restano "—".
+  const costoMio = uscitaMia(tripSpese(t.nome)), entTrip = entrataTrip(t);
+  const gara = !["casa", "altro"].includes(String(t.tipo || "").toLowerCase());
+  const chiusa = gara && ((t.fine && t.fine < today()) || (D.compensi || []).some(c => c.trasferta_id === t.id));
+  const nettoTrip = chiusa ? Math.round((entTrip - costoMio) * 100) / 100 : null;
+  const labEnt = cfg.who === "Giulio" ? "Compenso" : "Vincite";
   // sui segmenti solo i numeri che vogliono dire "da fare"
   const n = { checklist: cs.open.length, posta: carte.filter(c => c.seg === "da_fare").length };
   const q = quandoTrip(t);
@@ -617,7 +630,7 @@ function vTrip() {
     <div class="card head" style="margin-top:12px">
       <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}${intercont(t) ? ` <span class="pill blue tap" onclick="aiutoIntercont()">intercont. ?</span>` : ""}</div>
       ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
-      <div class="kp"><div><b>${eur(tot.mio)}</b><span>Spese tue</span></div><div><b>${cs.tot ? cs.done + "/" + cs.tot : "—"}</b><span>Checklist</span></div></div>
+      <div class="kp"><div><b class="${nettoTrip === null ? "" : nettoTrip < 0 ? "out" : "in"}">${nettoTrip === null ? "—" : (nettoTrip < 0 ? "−" : "+") + eur(Math.abs(nettoTrip))}</b><span>Netto</span></div><div><b class="${nettoTrip === null ? "" : "in"}">${nettoTrip === null ? "—" : eur(entTrip)}</b><span>${esc(labEnt)}</span></div><div><b>${eur(costoMio)}</b><span>Costo tuo</span></div></div>
       <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>${rigaCompensoTrip(t)}
     </div>
     <div class="seg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
@@ -645,11 +658,17 @@ function rigaCheck(c) {
     <div class="grow" onclick="formCheck('${c.id}')"><div class="name">${esc(c.voce)}${c.chi ? ` <span class="muted">· ${esc(c.chi)}</span>` : ""}</div>${sotto ? `<div class="muted ellipsis">${sotto}</div>` : ""}</div>
     ${bottoniVoce(c)}</div>`;
 }
+// D3 (T12 §4): le piastrelle "Libri Alessandra / Libri Giulio" non ci sono piu'.
+// Quella di chi legge ripeteva "Costo tuo" della testata; quella dell'ALTRO era
+// sbagliata su 23 trasferte su 24, perche' boot_ non manda le spese personali
+// dell'altra persona (es. Qualifica US Open: a lui diceva 0,00 € contro 580,85 €
+// veri). I libri sono un numero da commercialista: si guardano in Soldi, una volta
+// all'anno. Il Budget se n'e' andato con loro: non era mai stato compilato (0 su
+// 24), e in Info si vede lo stesso.
 function tripSpeseSeg(t) {
-  const tot = tripTotals(t.nome), ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
+  const ss = tripSpese(t.nome).sort((a, b) => a.data < b.data ? 1 : -1);
   const byCat = {}; ss.forEach(s => { if (s.tipo !== "caddie" && s.tipo !== "regolamento") { const k = catBreve(s.categoria); byCat[k] = (byCat[k] || 0) + mioImporto(s); } });
-  return `<div class="kpis"><div class="kpi"><div class="v">${eur(tot.ale)}</div><div class="l">Libri Alessandra</div></div><div class="kpi"><div class="v">${eur(tot.giu)}</div><div class="l">Libri Giulio</div></div>${t.budget ? `<div class="kpi"><div class="v">${eur(t.budget)}</div><div class="l">Budget · ${pct(tot.ale / t.budget)} usato</div></div>` : ""}</div>
-    ${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
+  return `${Object.keys(byCat).length ? `<div class="card">${bars(byCat)}</div>` : ""}
     <div class="card list">${ss.length ? ss.map(s => itemSpesa(s, true)).join("") : `<div class="muted">Nessuna spesa</div>`}</div>
     <button class="btn block" onclick="spesaPerTrip('${t.id}')">＋ Spesa per questa trasferta</button>`;
 }
@@ -684,7 +703,8 @@ function tripAiuto(id) {
     `<b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.`,
     `Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.`,
     ...(t && (D.compensi || []).some(c => c.trasferta_id === t.id) ? [`<b>Da bonificare</b> in testa è il compenso di questa settimana <b>più</b> il conto della trasferta: un bonifico solo chiude tutti e due. Il compenso resta lordo, è quello che Alessandra scarica. Tocca la riga per vedere fisso, percentuale ed extra.`] : []),
-    `<b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.`,
+    `<b>In testa</b>: <i>Costo tuo</i> è la tua quota delle spese di questa settimana, <i>${esc(cfg.who === "Giulio" ? "Compenso" : "Vincite")}</i> quello che ti ha reso, <i>Netto</i> la differenza. I primi due restano vuoti finché la trasferta non è finita: prima il compenso non è ancora stato scritto e direbbero solo una perdita. Il conto e il bonifico lì sotto sono solo di questa trasferta.`,
+    `Quanto va sui <b>libri</b> di ciascuno non sta più qui: è un numero da commercialista e si guarda una volta all'anno in <b>Soldi</b>. E quello dell'altra persona, su questa pagina, sarebbe stato anche <b>sbagliato</b>: le spese personali dell'altro non arrivano a questa app.`,
     `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
     `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
   ]);
