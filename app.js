@@ -486,6 +486,12 @@ let trVirt = [];
 // colore della carta con una legenda a quattro voci. Torneo e' il caso normale.
 const TIPI_T = { torneo: "Torneo (settimana pagata)", qualifica: "Qualifica / Q-School (non pagata)", casa: "Casa", altro: "Altro" };
 const TAG_TIPO = { torneo: "", qualifica: " blue", casa: " grey", altro: " warn" };
+// La regola del 50% delle tratte lunghe sta scritta UNA volta sola: la usano il
+// "?" della trasferta, il pallino in testata e la scheda in Info. Il modulo della
+// spesa ha la sua riga, piu' corta, perche' li' la regola serve per scegliere.
+const INTERCONT_NOTA = `<b>Trasferta intercontinentale.</b> La <b>tratta lunga</b> va registrata come spesa <i>condivisa</i>: il 50% torna a Giulio dal <b>conto</b>, non dal compenso — stessa cassa per lui, più deduzione per Alessandra. I voli <b>interni</b> alla destinazione se li paga Giulio, come dentro l’Europa.`;
+const intercont = t => String((t || {}).intercontinentale || "").toLowerCase() === "si";
+function aiutoIntercont() { aiutoFoglietto("Voli su una trasferta intercontinentale", [INTERCONT_NOTA]); }
 const tagTipo = tp => { const k = String(tp || "torneo").toLowerCase(); return `<span class="pill${k in TAG_TIPO ? TAG_TIPO[k] : " grey"}">${esc(k)}</span>`; };
 // Trasferte che esistono solo nelle spese: toccandole si crea la scheda,
 // cosi' diventano modificabili come tutte le altre. Il nome NON va cambiato:
@@ -564,9 +570,9 @@ function vTrip() {
   // sui segmenti solo i numeri che vogliono dire "da fare"
   const n = { checklist: cs.open.length, posta: carte.filter(c => c.seg === "da_fare").length };
   const q = quandoTrip(t);
-  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="ask" onclick="tripAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
+  let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="ask" onclick="tripAiuto('${t.id}')" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="card head" style="margin-top:12px">
-      <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}</div>
+      <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}${intercont(t) ? ` <span class="pill blue tap" onclick="aiutoIntercont()">intercont. ?</span>` : ""}</div>
       ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
       <div class="kp"><div><b>${eur(tot.mio)}</b><span>Spese tue</span></div><div><b>${cs.tot ? cs.done + "/" + cs.tot : "—"}</b><span>Checklist</span></div></div>
       <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>
@@ -618,8 +624,9 @@ function tripPostaSeg(t, carte) {
 }
 function tripInfoSeg(t) {
   const nota = (D.note || []).find(n => n.chiave === baseName(t.nome));
-  const righe = [["Tipo", TIPI_T[String(t.tipo || "torneo").toLowerCase()] || t.tipo], ["Città", t.citta], ["Paese", t.paese], ["Valuta", t.valuta || "EUR"], ["Fuso", t.fuso], ["Budget", t.budget ? eur(t.budget) : ""], ["Intercontinentale", t.intercontinentale === "si" ? "sì" : "no"]].filter(r => r[1]);
+  const righe = [["Tipo", TIPI_T[String(t.tipo || "torneo").toLowerCase()] || t.tipo], ["Città", t.citta], ["Paese", t.paese], ["Valuta", t.valuta || "EUR"], ["Fuso", t.fuso], ["Budget", t.budget ? eur(t.budget) : ""], ["Intercontinentale", intercont(t) ? "sì" : ""]].filter(r => r[1]);
   return `<h2 style="margin-top:6px">Scheda</h2><div class="card tap" onclick="formTrip('${t.id}')">${righe.map(r => `<div class="row between" style="padding:3px 0"><span class="muted">${r[0]}</span><span>${esc(r[1])}</span></div>`).join("")}</div>
+    ${intercont(t) ? `<div class="muted" style="margin:-6px 0 12px">${INTERCONT_NOTA}</div>` : ""}
     <h2>Note</h2><div class="card tap" onclick="formTrip('${t.id}')">${t.note ? esc(t.note).replace(/\n/g, "<br>") : `<span class="muted">Indirizzo dell'alloggio, targa dell'auto, contatti… tocca per scrivere</span>`}</div>
     <h2>Note sede <span class="muted">(${esc(baseName(t.nome))}, valide ogni anno)</span></h2>
     <div class="card tap" onclick="notaTrip('${t.id}')">${nota && nota.testo ? esc(nota.testo).replace(/\n/g, "<br>") : `<span class="muted">Hotel che vi è piaciuto, distanza dal campo, dove fare la spesa… tocca per scrivere</span>`}</div>
@@ -627,8 +634,10 @@ function tripInfoSeg(t) {
 }
 // Le regole della pagina, dietro il "?" (ADR-4): prima stavano in un paragrafo
 // sotto la checklist.
-function tripAiuto() {
+function tripAiuto(id) {
+  const t = (D.trasferte || []).find(x => x.id === id);
   aiutoFoglietto("Come funziona la trasferta", [
+    ...(intercont(t) ? [INTERCONT_NOTA] : []),
     `<b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.`,
     `Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.`,
     `<b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.`,
@@ -1694,7 +1703,7 @@ function moduloSpesa(o) {
       <div class="chips" id="fChipVal">${chipVal.map(v => `<button type="button" data-v="${esc(v)}" class="${v === v0 ? "on" : ""}">${esc(v)}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
       <select id="fVal" class="altre" hidden>${[...new Set([v0, ...vals])].map(v => `<option ${v === v0 ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></div>
     <div class="preview" id="fPrev">${o.ex && v0 !== "EUR" && s.importo_eur ? `= ${eur(s.importo_eur)} (cambio ${num(s.cambio, 4)})` : ""}</div>
-    ${conTipo ? `<div class="field"><div class="tipi" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button type="button" data-v="${k}" class="${s.tipo === k ? "on" : ""}"><b>${TIPO_BTN[k][0]}</b><span>${TIPO_BTN[k][1]}</span></button>`).join("")}</div>
+    ${conTipo ? `<div class="field"><div id="fInter"></div><div class="tipi" id="segTipo">${["condivisa", "ciascuno", "personale"].map(k => `<button type="button" data-v="${k}" class="${s.tipo === k ? "on" : ""}"><b>${TIPO_BTN[k][0]}</b><span>${TIPO_BTN[k][1]}</span></button>`).join("")}</div>
       <div id="fN" ${s.tipo === "condivisa" || s.tipo === "ciascuno" ? "" : "hidden"}>
         <div class="row split"><span class="muted">In quante parti</span><div class="chips inline" id="segN">${nSplit.map(n => `<button type="button" data-v="${n}" class="${+s.n_persone === n ? "on" : ""}">÷${n}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div></div>
         <select id="fNP" class="altre" hidden>${nMenu.map(n => `<option value="${n}" ${+s.n_persone === n ? "selected" : ""}>in ${n} parti</option>`).join("")}<option value="__x">un altro numero…</option></select>
@@ -1729,6 +1738,15 @@ function moduloSpesa(o) {
   const chips = (sel, cb) => { const el = $(sel); if (!el) return; el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.altre) return cb(null); el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); cb(b.dataset.v); }); };
   const eurOra = () => { const i = parseFloat(String($("#fImp").value).replace(",", ".")) || 0; return $("#fVal").value === "EUR" ? i : i * (Number(s.cambio) || 0); };
   const updBooks = () => { const b = $("#fBooks"); if (b) b.innerHTML = boxLibri(s, eurOra()); };
+  // Il 50% della tratta lunga arriva dal conto solo se il volo e' registrato
+  // condivisa: la regola si legge qui, dove il tocco la decide, e solo su un volo
+  // di una trasferta intercontinentale. Altrove sarebbe rumore su ogni spesa.
+  const updInter = () => {
+    const el = $("#fInter"); if (!el) return;
+    const t = (D.trasferte || []).find(x => x.nome === s.trasferta);
+    const lungo = t && String(t.intercontinentale || "").toLowerCase() === "si" && /voli/i.test(String(s.categoria || ""));
+    el.innerHTML = lungo ? `<div class="nota">✈ Trasferta intercontinentale: la <b>tratta lunga</b> va <b>Condivisa</b> — il 50% torna a Giulio dal conto. Un volo <b>interno</b> alla destinazione è <b>Personale</b>, come dentro l’Europa.</div>` : "";
+  };
   // I suggerimenti seguono la categoria scelta e si restringono mentre scrivi.
   let suggOra = [];
   const updSugg = () => {
@@ -1786,9 +1804,9 @@ function moduloSpesa(o) {
     prev().then(updBooks);
   };
   chips("#fChipVal", v => { const sel = $("#fVal"); if (!sel) return; if (v === null) { sel.hidden = false; return; } valTocco = true; sel.value = v; const l = $("#fValLab"); if (l) l.textContent = v; prev().then(updBooks); });
-  chips("#fChipCat", v => { const sel = $("#fCat"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; s.categoria = v; updSugg(); });
+  chips("#fChipCat", v => { const sel = $("#fCat"); if (!sel) return; if (v === null) { sel.hidden = false; return; } sel.value = v; s.categoria = v; updSugg(); updInter(); });
   const selVal = $("#fVal"); if (selVal) selVal.addEventListener("change", () => { valTocco = true; accendiVal(selVal.value); const l = $("#fValLab"); if (l) l.textContent = selVal.value; prev().then(updBooks); });
-  const selCat = $("#fCat"); if (selCat) selCat.addEventListener("change", () => { s.categoria = selCat.value; updSugg(); });
+  const selCat = $("#fCat"); if (selCat) selCat.addEventListener("change", () => { s.categoria = selCat.value; updSugg(); updInter(); });
   const inDesc = $("#fDesc"); if (inDesc) inDesc.addEventListener("input", updSugg);
   const elSugg = $("#fSugg"); if (elSugg) elSugg.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; const d = suggOra[+b.dataset.i]; if (d == null) return; $("#fDesc").value = d; updSugg(); });
   $("#fImp").addEventListener("input", updBooks);
@@ -1797,16 +1815,16 @@ function moduloSpesa(o) {
   // che usa tutto il resto della app (§6 del ticket).
   const selTrip = $("#fTrip");
   selTrip.addEventListener("change", async () => {
-    if (selTrip.value !== "__new") { s.trasferta = selTrip.value; valutaDaTrip(); return; }
+    if (selTrip.value !== "__new") { s.trasferta = selTrip.value; valutaDaTrip(); updInter(); return; }
     selTrip.value = s.trasferta || "";
     const n = await chiediTesto("Nuova trasferta", "", "es. Dutch Ladies Open");
     if (!n) return;
     selTrip.insertAdjacentHTML("afterbegin", `<option>${esc(n)}</option>`);
-    selTrip.value = n; s.trasferta = n; valutaDaTrip();
+    selTrip.value = n; s.trasferta = n; valutaDaTrip(); updInter();
   });
   ["#fImp", "#fData"].forEach(x => { const el = $(x); if (el) el.addEventListener("change", () => prev().then(updBooks)); });
   if (v0 !== "EUR") prev().then(updBooks);
-  updBooks(); updSugg();
+  updBooks(); updSugg(); updInter();
   // Foto: due bottoni invece dell'input di sistema. Sotto restano due input file
   // veri e nascosti - la fotocamera (capture) e la galleria, che su iPhone apre
   // anche "Scegli file" per i PDF.
