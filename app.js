@@ -558,6 +558,23 @@ function cardTrasferta(t, gruppo) {
 // Checklist · Spese · Posta · Info, al posto di undici blocchi in fila.
 // La testata: date, quando, spese tue, checklist, e il conto di QUESTA trasferta
 // nella voce di chi legge (saldoTripIo, giro 3). Duplica ed Elimina stanno in Info.
+// T12 §2.1: il compenso di QUESTA trasferta, una riga sola sotto il conto.
+// Prima vTrip non nominava mai i compensi: la pagina diceva quanto avevi speso e
+// mai quanto avevi guadagnato, e metà del conto della settimana viveva sotto
+// Soldi. Il numero è daPagare — compenso lordo PIU’ il conto della trasferta,
+// perché un bonifico solo chiude tutti e due (T6 §2) — detto nella voce di chi
+// legge, come saldoIo. Toccando si apre il compenso con le quattro righe di
+// aritmetica. Sulle trasferte SENZA compenso (qualifiche e tornei non LET, per
+// scelta) la riga non c’è: un "nessun compenso" sarebbe rumore su metà lista.
+function rigaCompensoTrip(t) {
+  const c = (D.compensi || []).find(x => x.trasferta_id === t.id);
+  if (!c) return "";
+  const dp = daPagare(c), pagato = c.stato === "pagato", q = eur(Math.abs(dp));
+  const frase = Math.abs(dp) < 0.005 ? "Compenso e conto si chiudono a zero"
+    : dp > 0 ? (cfg.who === "Giulio" ? `Da bonificare a te ${q}` : `Da bonificare a Giulio ${q}`)
+             : (cfg.who === "Giulio" ? `Da bonificare ad Alessandra ${q}` : `Da bonificare a te ${q}`);
+  return `<div class="row between tap" style="font-weight:600;margin-top:8px" onclick="formCompenso('${t.id}')"><span>${esc(frase)}</span><span class="pill ${pagato ? "" : "warn"}">${pagato ? "saldato" : "da saldare"}</span></div>`;
+}
 let tripSeg = "checklist", tripSegId = "", naAperte = false;
 const TRIP_SEG = { checklist: "Checklist", spese: "Spese", posta: "Posta", info: "Info" };
 function setTripSeg(s) { tripSeg = s; render(); }
@@ -575,7 +592,7 @@ function vTrip() {
       <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}${intercont(t) ? ` <span class="pill blue tap" onclick="aiutoIntercont()">intercont. ?</span>` : ""}</div>
       ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
       <div class="kp"><div><b>${eur(tot.mio)}</b><span>Spese tue</span></div><div><b>${cs.tot ? cs.done + "/" + cs.tot : "—"}</b><span>Checklist</span></div></div>
-      <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>
+      <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>${rigaCompensoTrip(t)}
     </div>
     <div class="seg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
   return h + ({ checklist: tripChecklistSeg, spese: tripSpeseSeg, posta: tripPostaSeg, info: tripInfoSeg }[tripSeg] || tripChecklistSeg)(t, carte);
@@ -640,6 +657,7 @@ function tripAiuto(id) {
     ...(intercont(t) ? [INTERCONT_NOTA] : []),
     `<b>Checklist</b>: il cerchio è la spunta — un tocco segna fatto, un altro rimette da fare, e ogni tocco è una scrittura sola. Il resto della riga apre la voce: link, codice, chi se ne occupa, <i>Non serve</i>, e le frecce per spostarla. Le voci "non serve" stanno chiuse in fondo.`,
     `Su una voce collegata a una mail, <b>✉️</b> apre la mail e <b>📄</b> il PDF salvato in Drive, che si apre anche in aereo. Il link del fornitore è nella carta della mail, sotto <i>Posta</i>.`,
+    ...(t && (D.compensi || []).some(c => c.trasferta_id === t.id) ? [`<b>Da bonificare</b> in testa è il compenso di questa settimana <b>più</b> il conto della trasferta: un bonifico solo chiude tutti e due. Il compenso resta lordo, è quello che Alessandra scarica. Tocca la riga per vedere fisso, percentuale ed extra.`] : []),
     `<b>Spese</b>: <i>Libri</i> è quanto va sui libri di ciascuno, <i>Spese tue</i> in testa è la tua quota. Il conto in testa è solo di questa trasferta.`,
     `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
     `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
