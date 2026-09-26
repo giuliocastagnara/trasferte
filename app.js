@@ -123,6 +123,19 @@ async function write(action, payload, applyLocal) {
     toast("Errore: " + e.message, 4000); throw e;
   }
 }
+// T14: le azioni che a video non cambiano niente finche' il server non risponde
+// (Posta, compensi): 5-15 secondi in cui la carta restava identica, si ritoccava, e
+// il secondo giro finiva in "Errore: già confermata" anche se il primo era andato.
+// Adesso chi aspetta e' segnato in inCorso (chiave = id della riga → che cosa sta
+// facendo): la carta lo dice e un secondo tocco non riparte.
+const inCorso = {};
+async function unaVolta(chiavi, cosa, fn) {
+  chiavi = [].concat(chiavi).filter(Boolean);
+  const gia = chiavi.find(k => inCorso[k]);
+  if (gia) { toast(inCorso[gia] + "… un attimo"); return; }
+  chiavi.forEach(k => { inCorso[k] = cosa; }); render();
+  try { return await fn(); } finally { chiavi.forEach(k => { delete inCorso[k]; }); render(); }
+}
 async function flushQueue() {
   if (!queue.length || syncing || !navigator.onLine) return;
   syncing = true;
@@ -325,9 +338,19 @@ function render() {
   if (bdg) { const n = postaDaFare().length; bdg.textContent = n > 99 ? "99+" : String(n); bdg.classList.toggle("hidden", !n); }
   setNet();
   const map = { posta: vPosta, soldi: vSoldi, audit: vAudit, oggi: vOggi, trasferte: vTrasferte, trip: vTrip, documenti: vDocumenti, impostazioni: vImpostazioni };
-  $("#view").innerHTML = (map[view] || vOggi)();
-  const mainEl = document.querySelector("main"); if (mainEl) mainEl.scrollTop = 0; window.scrollTo(0, 0);
+  // T14: si torna in cima solo cambiando pagina o segmento. Prima OGNI render
+  // tornava in cima, e un salvataggio ne fa due o tre (subito, alla risposta, al
+  // reload): in Posta, dopo ogni carta, si ripartiva dall'alto. La chiave si
+  // calcola DOPO la vista, perche' vTrip puo' cambiare tripSeg mentre disegna.
+  const mainEl = document.querySelector("main"), y = mainEl ? mainEl.scrollTop : 0;
+  const html = (map[view] || vOggi)();
+  const pagina = [view, viewArg, view === "trip" ? tripSeg : view === "posta" ? postaSeg : view === "soldi" ? soldiSeg : ""].join("|");
+  $("#view").innerHTML = html;
+  const stessa = pagina === paginaResa; paginaResa = pagina;
+  if (mainEl) mainEl.scrollTop = stessa ? y : 0;
+  if (!stessa) window.scrollTo(0, 0);
 }
+let paginaResa = "";
 // Quale tab del fondo si accende per ogni pagina (T10 giro 3: cinque tab,
 // Oggi · Trasferte · ＋ · Posta · Soldi). "" = nessuno suo, resta l'ultimo acceso.
 const NAV_PADRE = { trip: "trasferte", documenti: "", impostazioni: "", audit: "" };
@@ -462,11 +485,16 @@ const frase = s => s.charAt(0).toUpperCase() + s.slice(1);
 
 // La riga di una spesa. §3.6: l'icona dello scontrino compare solo quando MANCA
 // (prima c'era un quadrato grigio in ogni caso, e non diceva niente).
+// T14: lo scontrino di questa spesa e' in viaggio: il server non ha ancora risposto,
+// oppure la spesa aspetta nella coda offline con il file dentro.
+const scontrinoInArrivo = id => scontriniInArrivo.has(id) || queue.some(q => q.action === "spesa.save" && q.payload && q.payload.id === id && q.payload.file);
 function itemSpesa(s, mio) {
   const pieno = Math.round((+s.importo_eur || 0) * 100) / 100, val = mio ? mioImporto(s) : pieno, parz = mio && Math.abs(val - pieno) > 0.005;
   const tag = s.tipo === "condivisa" ? `<span class="pill">condivisa${+s.n_persone > 2 ? " ÷" + s.n_persone : ""}</span>` : s.tipo === "ciascuno" ? `<span class="pill blue">ognuno la sua</span>` : s.tipo === "personale" ? `<span class="pill grey">${esc(s.conto)}</span>` : s.tipo === "caddie" ? `<span class="pill warn">compenso caddie</span>` : `<span class="pill warn">pagamento</span>`;
   const orig = !parz && s.valuta && s.valuta !== "EUR" ? `<span class="muted">${num(s.importo)} ${esc(s.valuta)}</span> ` : "";
-  const manca = !s.scontrino && s.tipo !== "caddie" ? `<div class="nosc" title="manca lo scontrino">🧾 manca</div>` : "";
+  const manca = s.scontrino || s.tipo === "caddie" ? ""
+    : scontrinoInArrivo(s.id) ? `<div class="nosc arriva" title="lo scontrino sta arrivando su Drive">🧾 in arrivo…</div>`
+    : `<div class="nosc" title="manca lo scontrino">🧾 manca</div>`;
   return `<div class="item tap" onclick="formSpesa('${s.id}')">
     <div class="grow"><div class="ellipsis"><b>${esc(s.descrizione || s.categoria)}</b></div><div class="muted ellipsis">${fmtD(s.data)} · ${esc(s.trasferta)} · ${esc(catBreve(s.categoria))} · ${esc(s.pagato_da)}</div><div>${tag}</div></div>
     <div style="text-align:right">${orig}<div class="amt">${eur(val)}</div>${parz ? `<div class="muted">su ${eur(pieno)}</div>` : ""}${manca}</div></div>`;
@@ -594,6 +622,7 @@ function cardTrasferta(t, gruppo) {
 // scelta) la riga non c’è: un "nessun compenso" sarebbe rumore su metà lista.
 function rigaCompensoTrip(t) {
   const c = (D.compensi || []).find(x => x.trasferta_id === t.id);
+  if (inCorso["comp:" + t.id]) return `<div class="small muted" style="margin-top:8px">⏳ ${esc(inCorso["comp:" + t.id])}…</div>`;
   if (!c) return "";
   const dp = daPagare(c), pagato = c.stato === "pagato", q = eur(Math.abs(dp));
   // T13: saldata con una fattura -> la data e il numero congelato, non il da_pagare di
@@ -1251,10 +1280,11 @@ function formPren(id) {
   $("#pTrip").addEventListener("change", () => { $("#pVoce").innerHTML = voceOptions($("#pTrip").value); });
   $("#pSave").addEventListener("click", async () => {
     const trasferta_id = $("#pTrip").value, voce_id = $("#pVoce").value;
-    closeModal(); toast("Collego…");
-    toast("Collego e salvo il PDF in Drive…", 15000);
-    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); render(); const conSpesa = offriSpesaDopoCollega(p.id); toast((pdfPren(r.prenotazione) ? "Collegata: sulla voce trovi ✉️ mail e 📄 PDF" : "Collegata. Il PDF non è riuscito, ma la mail c'è") + (conSpesa ? " · c'è anche la spesa da registrare" : ""), 5000); }
+    closeModal();
+    await unaVolta(p.id, "Collego e salvo il PDF in Drive", async () => {
+    try { const r = await api("pren.collega", { id: p.id, trasferta_id, voce_id, voce: sugg[0] || p.oggetto.slice(0, 30) }); const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione; const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce); LS.set("data", D); const conSpesa = offriSpesaDopoCollega(p.id); toast((pdfPren(r.prenotazione) ? "Collegata: sulla voce trovi ✉️ mail e 📄 PDF" : "Collegata. Il PDF non è riuscito, ma la mail c'è") + (conSpesa ? " · c'è anche la spesa da registrare" : ""), 5000); }
     catch (e) { toast("Errore: " + e.message, 5000); }
+    });
   });
 }
 // Il "colpo solo" del ticket T8: appena la prenotazione è collegata, se dalla
@@ -1429,14 +1459,15 @@ function perNoUnTocco(q, trip) {
 async function registraSubito(id) {
   const c = cartaDiId(id), q = c && c.prop; if (!q) return;
   if (perNoUnTocco(q, c.trip)) return apriProposta(id);
-  toast("Creo la spesa…", 8000);
-  try {
-    const r = await api("proposta.conferma", bozzaProposta(q, c.trip));
-    const i = (D.proposte || []).findIndex(x => x.id === q.id); if (i >= 0) D.proposte[i] = r.proposta;
-    const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
-    LS.set("data", D); render();
-    toast("Registrata " + eur(r.spesa.importo_eur) + " · " + r.spesa.trasferta + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4500);
-  } catch (e) { toast("Errore: " + e.message, 5000); }
+  await unaVolta(q.id, "Creo la spesa", async () => {
+    try {
+      const r = await api("proposta.conferma", bozzaProposta(q, c.trip));
+      const i = (D.proposte || []).findIndex(x => x.id === q.id); if (i >= 0) D.proposte[i] = r.proposta;
+      const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
+      LS.set("data", D);
+      toast("Registrata " + eur(r.spesa.importo_eur) + " · " + r.spesa.trasferta + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4500);
+    } catch (e) { toast("Errore: " + e.message, 5000); }
+  });
 }
 function apriProposta(id) { const c = cartaDiId(id); formProposta(id, { trasferta: (c && c.trip) || "" }); }
 
@@ -1489,12 +1520,12 @@ function perNoCollega(p) {
 async function collegaSubito(id) {
   const p = visiblePren().find(x => x.id === id), u = p && unToccoPren(p);
   if (!u) return formPren(id);
-  toast("Collego e salvo il PDF in Drive…", 15000);
+  await unaVolta(p.id, "Collego e salvo il PDF in Drive", async () => {
   try {
     const r = await api("pren.collega", { id: p.id, trasferta_id: u.trasferta_id, voce_id: u.voce_id, voce: u.voce });
     const i = D.prenotazioni.findIndex(x => x.id === p.id); if (i >= 0) D.prenotazioni[i] = r.prenotazione;
     const j = D.checklist.findIndex(c => c.id === r.voce.id); if (j >= 0) D.checklist[j] = r.voce; else D.checklist.push(r.voce);
-    LS.set("data", D); render();
+    LS.set("data", D);
     // Q2 del ticket: due bottoni, non uno. Se dalla stessa mail e' nata anche una
     // ricevuta il modulo NON si apre da se' (sarebbe "collega e registra" in un
     // gesto solo): il bottone della ricevuta e' li' sulla carta, gia' pronto.
@@ -1503,6 +1534,7 @@ async function collegaSubito(id) {
       (pdfPren(r.prenotazione) ? " · sulla voce trovi ✉️ e 📄" : " · il PDF non è riuscito, la mail c'è") +
       (q && q.stato === "nuova" ? " · resta la ricevuta da registrare" : ""), 5000);
   } catch (e) { toast("Errore: " + e.message, 5000); }
+  });
 }
 
 // ---- la carta
@@ -1530,6 +1562,9 @@ function postaLink(c) {
 }
 function postaAzioni(c) {
   const p = c.pren, q = c.prop;
+  // T14: mentre il server lavora la carta non offre bottoni: niente secondo tocco
+  const occ = (p && inCorso[p.id]) || (q && inCorso[q.id]);
+  if (occ) return `<div class="pact"><div class="small muted">⏳ ${esc(occ)}…</div></div>`;
   const dedotta = c.dedotta ? `<div class="muted" style="margin-top:3px">trasferta dedotta dalla data: controlla che sia quella giusta</div>` : "";
   let h = "";
   if (p && p.stato === "nuova") {
@@ -1635,7 +1670,7 @@ function soldiCompensi() {
   h += `<div class="card list">` + trips.map(t => { const c = byTrip[t.id];
     const dp = c ? (c.stato === "pagato" && c.pagamento_id ? valoreSett(c, c.pagamento_id) : daPagare(c)) : 0;
     return `<div class="item tap" onclick="formCompenso('${t.id}')"><div class="grow"><div class="ellipsis"><b>${esc(t.nome)}</b> ${t.tipo === "qualifica" ? '<span class="pill grey">qualifica</span>' : ""}${t.intercontinentale === "si" ? ' <span class="pill blue">intercont.</span>' : ""}</div><div class="muted">${fmtD(t.inizio)} → ${fmtD(t.fine)}${c ? " · " + (RIS[c.risultato] || "").toLowerCase() : ""}</div></div>
-      <div style="text-align:right">${c ? `<div class="amt">${eur(Math.abs(dp))}</div>${dp < 0 ? `<div class="muted">${cfg.who === "Giulio" ? "li devi tu" : "li deve Giulio"}</div>` : ""}<span class="pill ${c.stato === "pagato" ? "" : "warn"}">${c.stato === "pagato" ? "saldato" + (c.pagamento_id && c.pagato_il ? " " + fmtD(c.pagato_il) : "") : "da saldare"}</span>` : `<span class="pill grey">da compilare</span>`}</div></div>`; }).join("") + `</div>`;
+      <div style="text-align:right">${inCorso["comp:" + t.id] ? `<span class="small muted">⏳ ${esc(inCorso["comp:" + t.id])}…</span>` : c ? `<div class="amt">${eur(Math.abs(dp))}</div>${dp < 0 ? `<div class="muted">${cfg.who === "Giulio" ? "li devi tu" : "li deve Giulio"}</div>` : ""}<span class="pill ${c.stato === "pagato" ? "" : "warn"}">${c.stato === "pagato" ? "saldato" + (c.pagamento_id && c.pagato_il ? " " + fmtD(c.pagato_il) : "") : "da saldare"}</span>` : `<span class="pill grey">da compilare</span>`}</div></div>`; }).join("") + `</div>`;
   return h + fattureCompensi(comp);
 }
 // T13: le fatture, ciascuna con le settimane che ha chiuso e quanto valevano quando
@@ -1699,11 +1734,13 @@ function formCompenso(tripId) {
   if (ex) $("#kPay").addEventListener("click", () => { const imp = Math.abs(dpOra); closeModal(); formSpesa(null, t.nome, "regolamento", { importo: imp ? imp : "", valuta: "EUR", cambio: 1, pagato_da: dpOra < 0 ? "Giulio" : "Alessandra", descrizione: "Saldo " + t.nome }, ex.id); });
   $("#kSave").addEventListener("click", async () => {
     c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim(); c.stato = $("#kStato").value;
-    closeModal(); toast("Salvo…");
-    try { const r = await api("compenso.save", c); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); render(); toast("Compenso salvato: " + eur(r.compenso.totale)); }
-    catch (e) { toast("Errore: " + e.message, 4000); }
+    closeModal();
+    await unaVolta("comp:" + tripId, "Salvo il compenso", async () => {
+      try { const r = await api("compenso.save", c); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); toast("Compenso salvato: " + eur(r.compenso.totale)); }
+      catch (e) { toast("Errore: " + e.message, 4000); }
+    });
   });
-  if (ex) $("#kDel").addEventListener("click", async () => { if (!await chiediConferma("Eliminare il compenso?", `Sparisce anche la riga <b>${esc(ex.trasferta || "")}</b> nel conto, e con lei il credito di quella settimana.`, { si: "Elimina", rosso: true })) return; closeModal(); try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); render(); } catch (e) { toast("Errore: " + e.message, 4000); } });
+  if (ex) $("#kDel").addEventListener("click", async () => { if (!await chiediConferma("Eliminare il compenso?", `Sparisce anche la riga <b>${esc(ex.trasferta || "")}</b> nel conto, e con lei il credito di quella settimana.`, { si: "Elimina", rosso: true })) return; closeModal(); await unaVolta("comp:" + tripId, "Elimino il compenso", async () => { try { await api("compenso.del", { id: ex.id }); D.compensi = D.compensi.filter(x => x.id !== ex.id); D.spese = D.spese.filter(x => x.id !== ex.spesa_id); LS.set("data", D); } catch (e) { toast("Errore: " + e.message, 4000); } }); });
 }
 // T13: una fattura paga piu' settimane. Dopo un pagamento NUOVO, e dal bottone
 // "Settimane" di una fattura, la app chiede QUALI settimane chiude, a spunta.
@@ -1727,14 +1764,18 @@ async function chiediSaldato(pag, compId) {
   if (!ris) return;
   const aggiungi = ris.filter(id => gia.indexOf(id) < 0), togli = gia.filter(id => ris.indexOf(id) < 0);
   if (!aggiungi.length && !togli.length) return;
-  try {
-    const r = [];
-    if (aggiungi.length) r.push(...await api("compenso.stato", { ids: aggiungi, stato: "pagato", pagamento_id: pag.id }));
-    if (togli.length) r.push(...await api("compenso.stato", { ids: togli, stato: "da_pagare" }));
-    r.forEach(x => { const i = D.compensi.findIndex(y => y.id === x.id); if (i >= 0) D.compensi[i] = x; });
-    LS.set("data", D); render();
-    toast(aggiungi.length ? `${aggiungi.length === 1 ? "Settimana saldata" : aggiungi.length + " settimane saldate"} con questa fattura` : "Settimane aggiornate");
-  } catch (e) { toast("Errore: " + e.message, 4000); }
+  // T14: le settimane toccate dicono "in corso" finche' il server non risponde
+  const chiavi = cand.filter(c => aggiungi.indexOf(c.id) >= 0 || togli.indexOf(c.id) >= 0).map(c => "comp:" + c.trasferta_id);
+  await unaVolta(chiavi, "Aggiorno le settimane", async () => {
+    try {
+      const r = [];
+      if (aggiungi.length) r.push(...await api("compenso.stato", { ids: aggiungi, stato: "pagato", pagamento_id: pag.id }));
+      if (togli.length) r.push(...await api("compenso.stato", { ids: togli, stato: "da_pagare" }));
+      r.forEach(x => { const i = D.compensi.findIndex(y => y.id === x.id); if (i >= 0) D.compensi[i] = x; });
+      LS.set("data", D);
+      toast(aggiungi.length ? `${aggiungi.length === 1 ? "Settimana saldata" : aggiungi.length + " settimane saldate"} con questa fattura` : "Settimane aggiornate");
+    } catch (e) { toast("Errore: " + e.message, 4000); }
+  });
 }
 // Le settimane che una fattura puo' prendere: quelle da saldare, quelle segnate
 // saldate a mano senza fattura, e quelle gia' sue. Dalla piu' vecchia.
@@ -1823,6 +1864,9 @@ function allineaCompensiLocale(d, s, cancellata) {
 // delle due funzioni preceduto da "async function") non vanno scritte qui
 // dentro nemmeno in un commento: sarebbero loro il taglio.
 let pendingFile = null;
+// T14: le spese partite con uno scontrino che il server non ha ancora confermato.
+// Quelle rimaste nella coda offline si riconoscono dalla coda (scontrinoInArrivo).
+const scontriniInArrivo = new Set();
 
 // Nome corto per la pasticca (Q8): "Viaggio - Vitto (Ristoranti/Spesa)" -> "Vitto".
 const catBreve = c => String(c || "").split(" - ").pop().replace(/\s*\(.*\)\s*$/, "").trim() || String(c || "");
@@ -2016,15 +2060,38 @@ function moduloSpesa(o) {
   // Foto: due bottoni invece dell'input di sistema. Sotto restano due input file
   // veri e nascosti - la fotocamera (capture) e la galleria, che su iPhone apre
   // anche "Scegli file" per i PDF.
+  // T14: preparare una foto della galleria (ridimensionarla) richiede secondi, e il
+  // Salva prima non aspettava: toccato durante "Preparo il file…" la spesa partiva
+  // SENZA scontrino, in silenzio. Adesso la preparazione e' una promessa (filePrep)
+  // che il Salva aspetta, e se fallisce lo si dice invece di restare li' per sempre.
+  let filePrep = null, fileKo = false;
   const scegli = (bSel, iSel) => {
     const b = $(bSel), i = $(iSel); if (!b || !i) return;
     b.addEventListener("click", () => i.click());
-    i.addEventListener("change", async () => { const f = i.files[0]; if (!f) return; $("#fFileInfo").textContent = "Preparo il file…"; pendingFile = await prepFile(f); $("#fFileInfo").textContent = `${pendingFile.name} · ${Math.round(pendingFile.base64.length * 0.75 / 1024)} KB`; });
+    i.addEventListener("change", () => {
+      const f = i.files[0]; if (!f) return;
+      const info = $("#fFileInfo"); info.textContent = "Preparo il file…"; pendingFile = null; fileKo = false;
+      const questa = filePrep = prepFile(f).then(pf => {
+        if (filePrep !== questa) return;   // nel frattempo ne e' stato scelto un altro
+        pendingFile = pf; info.textContent = `✓ ${pf.name} · ${Math.round(pf.base64.length * 0.75 / 1024)} KB`;
+      }).catch(() => {
+        if (filePrep !== questa) return;
+        pendingFile = null; fileKo = true; info.textContent = "⚠ Non riesco a leggere questo file: sceglilo di nuovo";
+      });
+      i.value = "";   // cosi' si puo' riscegliere lo stesso file
+    });
   };
   scegli("#fCam", "#fFoto"); scegli("#fGal", "#fFile");
 
   let dupVisto = ""; // T7: la chiave dell'avviso gia' mostrato; se la spesa cambia, si riavvisa
   $("#fSave").addEventListener("click", async () => {
+    const bSave = $("#fSave"); if (bSave.disabled) return;
+    if (filePrep) {
+      const t0 = bSave.textContent; bSave.disabled = true; bSave.textContent = "Preparo lo scontrino…";
+      await filePrep;
+      bSave.disabled = false; bSave.textContent = t0;
+    }
+    if (fileKo && !await chiediConferma("Salvare senza scontrino?", "Il file scelto non si è potuto leggere. Puoi salvare adesso e allegarlo dopo, aprendo la spesa.", { si: "Salva senza" })) return;
     s.importo = parseFloat(String($("#fImp").value).replace(",", ".")); if (!s.importo) return toast("Inserisci l'importo");
     s.valuta = $("#fVal").value; s.data = $("#fData").value; s.trasferta = $("#fTrip").value;
     s.descrizione = $("#fDesc").value.trim();
@@ -2041,7 +2108,8 @@ function moduloSpesa(o) {
     const dup = dupDi(Object.assign({}, s, { importo_eur: eurNoto }), D.spese || []);
     const chiave = dup.map(d => d.spesa.id).join(",") + "|" + s.importo + "|" + s.data + "|" + s.trasferta;
     if (dup.length && chiave !== dupVisto) { dupVisto = chiave; $("#fDup").innerHTML = avvisoDoppioni(dup); $("#fSave").textContent = o.salvaComunque; $("#fDup").scrollIntoView({ block: "nearest" }); return; }
-    await o.onSalva(s);
+    bSave.disabled = true;   // T14: un secondo tocco su Salva non manda una seconda spesa
+    try { await o.onSalva(s); } finally { bSave.disabled = false; }
   });
   if (o.onElimina) $("#fDel").addEventListener("click", o.onElimina);
 }
@@ -2078,10 +2146,29 @@ function formSpesa(id, tripName, forceTipo, pre, compId) {
       s.modificato = new Date().toISOString().slice(0, 19);
       // stima locale (il server ricalcola col cambio del giorno)
       s.importo_eur = Math.round(s.importo * (s.cambio || 1) * 100) / 100; computeSpesa(s);
-      const payload = Object.assign({}, s); if (pendingFile) { payload.file = pendingFile; payload.scontrino = ""; }
+      const conFile = !!pendingFile;
+      const payload = Object.assign({}, s); if (conFile) { payload.file = pendingFile; payload.scontrino = ""; }
       closeModal();
-      const res = await write("spesa.save", payload, d => { const i = d.spese.findIndex(x => x.id === s.id); if (i >= 0) d.spese[i] = s; else d.spese.push(s); if (ex) allineaCompensiLocale(d, s, false); });
-      if (res) { const i = D.spese.findIndex(x => x.id === res.id); if (i >= 0) D.spese[i] = res; LS.set("data", D); render(); toast("Salvato" + (res.valuta !== "EUR" ? ` · ${eur(res.importo_eur)}` : "")); }
+      // T14: finche' il server non ha messo lo scontrino su Drive la riga dice
+      // "🧾 in arrivo…" invece di "🧾 manca": prima sembrava perso e lo si riallegava.
+      if (conFile) scontriniInArrivo.add(s.id);
+      let res;
+      try {
+        res = await write("spesa.save", payload, d => { const i = d.spese.findIndex(x => x.id === s.id); if (i >= 0) d.spese[i] = s; else d.spese.push(s); if (ex) allineaCompensiLocale(d, s, false); });
+      } catch (e) {
+        // il server l'ha rifiutata (la rete c'era, se no sarebbe in coda): una spesa
+        // NUOVA non resta a video come se ci fosse. write() ha gia' detto l'errore.
+        scontriniInArrivo.delete(s.id);
+        if (!ex) { D.spese = (D.spese || []).filter(x => x.id !== s.id); LS.set("data", D); render(); toast("Spesa NON salvata: " + e.message, 6000); }
+        return;
+      }
+      if (res) {
+        scontriniInArrivo.delete(s.id);
+        const i = D.spese.findIndex(x => x.id === res.id); if (i >= 0) D.spese[i] = res; LS.set("data", D); render();
+        const eurTxt = res.valuta !== "EUR" ? ` · ${eur(res.importo_eur)}` : "";
+        if (conFile && !res.scontrino) toast("Spesa salvata, ma lo scontrino non è arrivato: apri la spesa e riallegalo" + eurTxt, 7000);
+        else toast("Salvato" + (conFile ? " · scontrino archiviato" : "") + eurTxt, conFile ? 3500 : 2200);
+      }
       // T13: un pagamento NUOVO chiede quali settimane chiude (T9 lo chiedeva solo
       // quando arrivava da un compenso, e per un compenso solo). Mai automatico.
       if (res && !ex && res.tipo === "regolamento") await chiediSaldato(res, compId);
@@ -2114,26 +2201,46 @@ function formProposta(id, pre) {
       const payload = { id: p.id, importo: s.importo, valuta: s.valuta, data: s.data, trasferta: s.trasferta,
                         categoria: s.categoria, descrizione: s.descrizione, tipo: s.tipo, pagato_da: s.pagato_da,
                         n_persone: s.n_persone, conto: cfg.who };
-      closeModal(); toast("Creo la spesa…");
-      try {
-        const r = await api("proposta.conferma", payload);
-        const i = (D.proposte || []).findIndex(x => x.id === p.id); if (i >= 0) D.proposte[i] = r.proposta;
-        const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
-        LS.set("data", D); render();
-        toast("Spesa creata" + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4000);
-      } catch (e) { toast("Errore: " + e.message, 5000); }
+      closeModal();
+      await unaVolta(p.id, "Creo la spesa", async () => {
+        try {
+          const r = await api("proposta.conferma", payload);
+          const i = (D.proposte || []).findIndex(x => x.id === p.id); if (i >= 0) D.proposte[i] = r.proposta;
+          const j = (D.spese || []).findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else (D.spese = D.spese || []).push(r.spesa);
+          LS.set("data", D);
+          toast("Spesa creata" + (r.spesa.scontrino ? " · scontrino archiviato" : ""), 4000);
+        } catch (e) { toast("Errore: " + e.message, 5000); }
+      });
     },
   });
 }
 
+// T14: se la foto non si riesce a rimpicciolire (un formato che createImageBitmap
+// non decodifica, es. HEIC su qualche iOS) si prova con un <img>, e se nemmeno
+// quello va si manda il file ORIGINALE: pesa di piu', ma prima non si mandava niente.
 async function prepFile(f) {
-  const isImg = /^image\//.test(f.type);
-  if (!isImg) return { name: f.name, mime: f.type, base64: await toB64(f) };
-  const bmp = await createImageBitmap(f); const max = 1600; const sc = Math.min(1, max / Math.max(bmp.width, bmp.height));
-  const c = document.createElement("canvas"); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
-  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
-  const dataUrl = c.toDataURL("image/jpeg", 0.82);
-  return { name: f.name.replace(/\.[^.]+$/, "") + ".jpg", mime: "image/jpeg", base64: dataUrl.split(",")[1] };
+  const nome = f.name || "scontrino";
+  const mime = f.type || (/\.pdf$/i.test(nome) ? "application/pdf" : "application/octet-stream");
+  const originale = async () => ({ name: nome, mime, base64: await toB64(f) });
+  if (!/^image\//.test(f.type) && !/\.(jpe?g|png|heic|heif|webp)$/i.test(nome)) return originale();
+  try {
+    const bmp = await createImageBitmap(f).catch(() => immagineDa(f));
+    const w = bmp.naturalWidth || bmp.width, h = bmp.naturalHeight || bmp.height;
+    const sc = Math.min(1, 1600 / Math.max(w, h));
+    const c = document.createElement("canvas"); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const dataUrl = c.toDataURL("image/jpeg", 0.82);
+    if (!/^data:image\/jpeg/.test(dataUrl) || dataUrl.length < 1000) throw new Error("canvas vuoto");
+    return { name: nome.replace(/\.[^.]+$/, "") + ".jpg", mime: "image/jpeg", base64: dataUrl.split(",")[1] };
+  } catch (e) { return originale(); }
+}
+function immagineDa(f) {
+  return new Promise((res, rej) => {
+    const u = URL.createObjectURL(f), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(u); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(u); rej(new Error("immagine illeggibile")); };
+    img.src = u;
+  });
 }
 const toB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
 
@@ -2261,8 +2368,12 @@ function formDoc(id) {
     <div class="field"><label>oppure link</label><input id="dUrl" value="${esc(d.url)}" inputmode="url"></div>
     <div class="field"><label>Note (numero, dove si trova l'originale…)</label><input id="dNote" value="${esc(d.note)}"></div>
     <div class="row" style="gap:8px"><button class="btn primary grow" id="dSave">Salva</button>${ex ? `<button class="btn danger" id="dDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
-  $("#dFile").addEventListener("change", async () => { const f = $("#dFile").files[0]; if (f) pendingFile = await prepFile(f); });
+  // T14: stessa gara dello scontrino: il Salva aspetta il file in preparazione
+  let docPrep = null;
+  $("#dFile").addEventListener("change", () => { const f = $("#dFile").files[0]; if (!f) return; pendingFile = null; docPrep = prepFile(f).then(pf => { pendingFile = pf; }).catch(() => toast("Non riesco a leggere questo file", 4000)); });
   $("#dSave").addEventListener("click", async () => {
+    const b = $("#dSave"); if (b.disabled) return;
+    if (docPrep) { b.disabled = true; b.textContent = "Preparo il file…"; await docPrep; b.disabled = false; b.textContent = "Salva"; }
     d.nome = $("#dNome").value.trim(); d.persona = $("#dChi").value; d.scadenza = $("#dScad").value; d.url = $("#dUrl").value.trim(); d.note = $("#dNote").value.trim();
     if (!d.nome) return toast("Dai un nome"); if (!d.id) d.id = uid(); closeModal();
     const payload = Object.assign({}, d); if (pendingFile) payload.file = pendingFile;

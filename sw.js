@@ -7,7 +7,7 @@
 // vecchio non si vede online (il fetch va prima in rete) ma rompe l'OFFLINE:
 // si precarica app.js?v=27 mentre la pagina chiede app.js?v=28, e senza rete
 // quella richiesta non trova niente in cache. Ora ASSETS lo ricava da V.
-const V = 42;
+const V = 43;
 const CACHE = "trasferte-v" + V;
 const ASSETS = ["./", "./index.html", `./style.css?v=${V}`, `./app.js?v=${V}`, "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-180.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });

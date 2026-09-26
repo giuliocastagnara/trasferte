@@ -200,6 +200,7 @@ details.altro .field{margin-top:8px}
 .kpi-v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
 /* la riga delle spese: il segno "manca lo scontrino", solo quando manca */
 .nosc{font-size:11px;color:#8a5a00;white-space:nowrap;margin-top:1px}
+.nosc.arriva{color:var(--ink2)}
 /* i filtri come una riga di pasticche che scorre di lato, senza andare a capo */
 .chips.scroll{flex-wrap:nowrap;overflow-x:auto;margin-top:0;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .chips.scroll::-webkit-scrollbar{display:none}
