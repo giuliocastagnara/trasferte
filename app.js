@@ -139,13 +139,18 @@ async function unaVolta(chiavi, cosa, fn) {
 async function flushQueue() {
   if (!queue.length || syncing || !navigator.onLine) return;
   syncing = true;
+  // T16: dopo le sole spunte della valigia non si rilegge tutto: la app le ha gia'
+  // applicate, e un boot a ogni spunta rimetterebbe per un attimo "da mettere" le
+  // voci toccate nel frattempo. Si rilegge se c'era altro, o se una e' stata scartata.
+  let rileggi = false;
   while (queue.length) {
     const q = queue[0];
+    if (!/^valigia\./.test(q.action)) rileggi = true;
     try { await api(q.action, q.payload); queue.shift(); LS.set("queue", queue); }
-    catch (e) { if (!/fetch|network|Failed/i.test(String(e))) { queue.shift(); LS.set("queue", queue); toast("Modifica scartata: " + e.message, 4000); } else break; }
+    catch (e) { if (!/fetch|network|Failed/i.test(String(e))) { queue.shift(); LS.set("queue", queue); rileggi = true; toast("Modifica scartata: " + e.message, 4000); } else break; }
   }
   syncing = false; setNet();
-  if (!queue.length) await reload(true);
+  if (!queue.length && rileggi) await reload(true);
 }
 async function reload(silent) {
   if (!cfg.api || !cfg.token) return;
@@ -634,7 +639,7 @@ function rigaCompensoTrip(t) {
   return `<div class="row between tap" style="font-weight:600;margin-top:8px" onclick="formCompenso('${t.id}')"><span>${esc(frase)}</span><span class="pill ${pagato ? "" : "warn"}">${pagato ? "saldato" : "da saldare"}</span></div>`;
 }
 let tripSeg = "checklist", tripSegId = "", naAperte = false;
-const TRIP_SEG = { checklist: "Checklist", spese: "Spese", posta: "Posta", info: "Info" };
+const TRIP_SEG = { checklist: "Checklist", valigia: "Valigia", spese: "Spese", posta: "Posta", info: "Info" };
 function setTripSeg(s) { tripSeg = s; render(); }
 function vTrip() {
   const t = (D.trasferte || []).find(x => x.id === viewArg); if (!t) return vTrasferte();
@@ -656,7 +661,7 @@ function vTrip() {
   const nettoTrip = chiusa ? Math.round((entTrip - costoMio) * 100) / 100 : null;
   const labEnt = cfg.who === "Giulio" ? "Compenso" : "Vincite";
   // sui segmenti solo i numeri che vogliono dire "da fare"
-  const n = { checklist: cs.open.length, posta: carte.filter(c => c.seg === "da_fare").length };
+  const n = { checklist: cs.open.length, valigia: valigiaTrip(t.id).filter(v => v.fatto !== "si").length, posta: carte.filter(c => c.seg === "da_fare").length };
   const q = quandoTrip(t);
   let h = `<div class="row"><button class="btn sm" onclick="indietro('trasferte')">‹</button><h1 class="grow" style="margin:0">${esc(t.nome)}</h1><button class="ask" onclick="tripAiuto('${t.id}')" title="Come funziona">?</button><button class="btn sm" onclick="formTrip('${t.id}')">Modifica</button></div>
     <div class="card head" style="margin-top:12px">
@@ -665,8 +670,8 @@ function vTrip() {
       <div class="kp"><div><b class="${nettoTrip === null ? "" : nettoTrip < 0 ? "out" : "in"}">${nettoTrip === null ? "—" : (nettoTrip < 0 ? "−" : "+") + eur(Math.abs(nettoTrip))}</b><span>Netto</span></div><div><b class="${nettoTrip === null ? "" : "in"}">${nettoTrip === null ? "—" : eur(entTrip)}</b><span>${esc(labEnt)}</span></div><div><b>${eur(costoMio)}</b><span>Costo tuo</span></div></div>
       <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>${rigaCompensoTrip(t)}
     </div>
-    <div class="seg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
-  return h + ({ checklist: tripChecklistSeg, spese: tripSpeseSeg, posta: tripPostaSeg, info: tripInfoSeg }[tripSeg] || tripChecklistSeg)(t, carte);
+    <div class="seg tripseg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
+  return h + ({ checklist: tripChecklistSeg, valigia: tripValigiaSeg, spese: tripSpeseSeg, posta: tripPostaSeg, info: tripInfoSeg }[tripSeg] || tripChecklistSeg)(t, carte);
 }
 // Checklist: le voci vive sopra, le "non serve" chiuse sotto (sono 171 su 216,
 // §1 del ticket: a video erano solo rumore).
@@ -737,9 +742,127 @@ function tripAiuto(id) {
     ...(t && (D.compensi || []).some(c => c.trasferta_id === t.id) ? [`<b>Da bonificare</b> in testa è il compenso di questa settimana <b>più</b> il conto della trasferta: un bonifico solo chiude tutti e due. Il compenso resta lordo, è quello che Alessandra scarica. Tocca la riga per vedere fisso, percentuale ed extra.`] : []),
     `<b>In testa</b>: <i>Costo tuo</i> è la tua quota delle spese di questa settimana, <i>${esc(cfg.who === "Giulio" ? "Compenso" : "Vincite")}</i> quello che ti ha reso, <i>Netto</i> la differenza. I primi due restano vuoti finché la trasferta non è finita: prima il compenso non è ancora stato scritto e direbbero solo una perdita. Il conto e il bonifico lì sotto sono solo di questa trasferta.`,
     `Quanto va sui <b>libri</b> di ciascuno non sta più qui: è un numero da commercialista e si guarda una volta all'anno in <b>Soldi</b>. E quello dell'altra persona, su questa pagina, sarebbe stato anche <b>sbagliato</b>: le spese personali dell'altro non arrivano a questa app.`,
+    `<b>Valigia</b>: è <b>solo tua</b>, ${esc(other(cfg.who))} ha la sua e non vede questa. Nasce con un tocco dalla tua lista (Impostazioni → <i>La mia valigia</i>) oppure vuota. Il cerchio è la spunta, un tocco una scrittura, e funziona anche <b>senza rete</b>: parte appena torna. Il resto della riga apre la voce: nome, gruppo, frecce, elimina.`,
     `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
     `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
   ]);
+}
+
+// ---------------------------------------------------------------- VALIGIA (T16)
+// Personale (il boot porta solo la propria), per trasferta, a gruppi. Non sta dentro
+// la Checklist: quella e' condivisa e la leggono Oggi, Posta e l'audit.
+const valigiaTrip = tid => (D.valigia || []).filter(v => v.trasferta_id === tid).sort((a, b) => (Number(a.ordine) || 0) - (Number(b.ordine) || 0));
+// I gruppi nell'ordine della loro prima voce (l'ordine e' uno solo su tutta la lista)
+function gruppiValigia(vs) {
+  const gs = [];
+  vs.forEach(v => { const k = v.gruppo || "Altro"; let g = gs.find(x => x.nome === k); if (!g) gs.push(g = { nome: k, voci: [] }); g.voci.push(v); });
+  return gs;
+}
+const modelloValigia = () => { const m = (D.settings || {}).valigia_template; return Array.isArray(m) ? m : []; };
+let valigiaUltimoGruppo = "";
+// Le scritture della valigia vanno SEMPRE in coda (la stessa di write(), salvata sul
+// telefono) e partono una alla volta, nell'ordine dei tocchi. Con write() una spunta
+// data mentre valigia.crea e' ancora in viaggio — o subito dopo una crea rimasta in
+// coda in aereo — arriverebbe al server prima della lista, e verrebbe rifiutata.
+function scriviValigia(action, payload, applyLocal) {
+  applyLocal(D); LS.set("data", D);
+  queue.push({ action, payload, ts: Date.now() }); LS.set("queue", queue); setNet();
+  render();
+  flushQueue();
+}
+function tripValigiaSeg(t) {
+  const vs = valigiaTrip(t.id);
+  if (!vs.length) {
+    const nv = modelloValigia().reduce((a, g) => a + (g.voci || []).length, 0);
+    return `<div class="empty">La valigia per questa trasferta non c'è ancora.<br><span class="small">È solo tua: ${esc(other(cfg.who))} non la vede.</span></div>
+      <button class="btn primary block" onclick="preparaValigia('${t.id}')" ${nv ? "" : "disabled"}>Prepara dalla mia lista${nv ? ` · ${nv} voci` : ""}</button>
+      <button class="btn block" style="margin-top:8px" onclick="formValigia(null,'${t.id}')">Parti vuota</button>`;
+  }
+  const mancano = vs.filter(v => v.fatto !== "si").length;
+  return `<div class="row between"><h2 style="margin-top:6px">Valigia <span class="muted">· ${mancano ? mancano + " da mettere" : "tutto dentro"}</span></h2><button class="btn sm" onclick="formValigia(null,'${t.id}')">＋ voce</button></div>
+    ${gruppiValigia(vs).map(g => `<div class="card"><div><b>${esc(g.nome)}</b> <span class="muted">· ${g.voci.filter(v => v.fatto === "si").length}/${g.voci.length}</span></div>${g.voci.map(rigaValigia).join("")}</div>`).join("")}`;
+}
+// Q3: una voce messa resta al suo posto, barrata. In valigia si cerca per gruppo, e
+// una lista che si rimescola a ogni tocco fa perdere il segno.
+function rigaValigia(v) {
+  const f = v.fatto === "si";
+  return `<div class="check ${f ? "fatto messa" : "da_fare"}">
+    <div class="st ${f ? "fatto" : ""}" onclick="segnaValigia('${v.id}')">${f ? "✓" : ""}</div>
+    <div class="grow" onclick="formValigia('${v.id}')"><div class="name">${esc(v.voce)}</div></div></div>`;
+}
+// Un tocco dopo l'altro non crea due liste: dopo il primo la lista c'e' gia' in
+// locale e il segmento non mostra piu' il bottone. Due telefoni: ci pensa il server.
+function preparaValigia(tid) {
+  if (valigiaTrip(tid).length) return;
+  const righe = [];
+  modelloValigia().forEach(g => (g.voci || []).forEach(v => righe.push({ id: uid(), gruppo: g.gruppo, voce: v, ordine: righe.length + 1 })));
+  if (!righe.length) return toast("La tua lista è vuota: riempila in Impostazioni");
+  scriviValigia("valigia.crea", { trasferta_id: tid, righe }, d => {
+    d.valigia = (d.valigia || []).concat(righe.map(r => Object.assign({ trasferta_id: tid, persona: cfg.who, fatto: "" }, r)));
+  });
+}
+function segnaValigia(id) {
+  const v = (D.valigia || []).find(x => x.id === id); if (!v) return;
+  const fatto = v.fatto === "si" ? "" : "si";
+  scriviValigia("valigia.save", { id, fatto }, () => { v.fatto = fatto; });
+}
+// ▲▼ spostano dentro il gruppo; poi si rinumera tutta la lista nell'ordine in cui la
+// si vede, cosi' l'ordine sul foglio resta quello a video.
+function spostaValigia(id, dir) {
+  const v = (D.valigia || []).find(x => x.id === id); if (!v) return;
+  const gs = gruppiValigia(valigiaTrip(v.trasferta_id)), g = gs.find(x => x.voci.includes(v));
+  const i = g.voci.indexOf(v), j = i + dir; if (j < 0 || j >= g.voci.length) return;
+  g.voci.splice(i, 1); g.voci.splice(j, 0, v);
+  const ids = [].concat(...gs.map(x => x.voci)).map(x => x.id);
+  scriviValigia("valigia.ordina", { ids }, d => ids.forEach((vid, k) => { const x = (d.valigia || []).find(y => y.id === vid); if (x) x.ordine = k + 1; }));
+}
+function formValigia(id, tid) {
+  const ex = id ? (D.valigia || []).find(x => x.id === id) : null;
+  const trip = ex ? ex.trasferta_id : tid;
+  const vs = valigiaTrip(trip), gruppi = gruppiValigia(vs).map(g => g.nome);
+  // il gruppo proposto per una voce nuova e' l'ultimo usato
+  let gruppo = ex ? (ex.gruppo || "Altro") : (gruppi.includes(valigiaUltimoGruppo) ? valigiaUltimoGruppo : gruppi[gruppi.length - 1] || valigiaUltimoGruppo || "Varie");
+  if (!gruppi.includes(gruppo)) gruppi.push(gruppo);
+  const chipG = () => gruppi.map(g => `<button type="button" data-v="${esc(g)}" class="${g === gruppo ? "on" : ""}">${esc(g)}</button>`).join("") + `<button type="button" data-nuovo="1">nuovo…</button>`;
+  const posG = () => { const g = gruppiValigia(valigiaTrip(trip)).find(x => x.voci.some(y => y.id === id)); return g ? { i: g.voci.findIndex(y => y.id === id), n: g.voci.length } : { i: 0, n: 1 }; };
+  const p0 = ex ? posG() : null;
+  openModal(`<h2 style="margin-top:0">${ex ? "Voce della valigia" : "Nuova voce"}</h2>
+    <div class="field"><label>Cosa</label><input id="vVoce" value="${esc(ex ? ex.voce : "")}" placeholder="es. Passaporto"></div>
+    <div class="field"><label>Gruppo</label><div class="chips inline" id="vGr">${chipG()}</div></div>
+    ${ex && p0.n > 1 ? `<div class="field"><label>Posizione nel gruppo</label><div class="ord"><button class="obtn" id="vSu" ${p0.i <= 0 ? "disabled" : ""}>▲</button><button class="obtn" id="vGiu" ${p0.i >= p0.n - 1 ? "disabled" : ""}>▼</button><span class="muted" id="vPos">${p0.i + 1} di ${p0.n}</span></div></div>` : ""}
+    <div class="row" style="gap:8px"><button class="btn primary grow" id="vSave">Salva</button>${ex ? `<button class="btn danger" id="vDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>`);
+  $("#vGr").addEventListener("click", async e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.nuovo) {
+      const n = await chiediTesto("Nuovo gruppo", "", "es. Palestra");
+      if (!n) return;
+      if (!gruppi.includes(n)) gruppi.push(n);
+      gruppo = n;
+    } else gruppo = b.dataset.v;
+    $("#vGr").innerHTML = chipG();
+  });
+  // ▲▼ scrivono subito, come nella checklist, e il foglietto resta aperto
+  if (ex && p0.n > 1) ["vSu", "vGiu"].forEach((bid, k) => $("#" + bid).addEventListener("click", () => {
+    spostaValigia(ex.id, k ? 1 : -1);
+    const p = posG();
+    if ($("#vPos")) { $("#vPos").textContent = `${p.i + 1} di ${p.n}`; $("#vSu").disabled = p.i <= 0; $("#vGiu").disabled = p.i >= p.n - 1; }
+  }));
+  $("#vSave").addEventListener("click", () => {
+    const voce = $("#vVoce").value.trim();
+    if (!voce) return toast("Scrivi cosa");
+    valigiaUltimoGruppo = gruppo;
+    // cambiando gruppo (o per una voce nuova) si va in fondo a quel gruppo
+    const fondo = Math.max(0, ...valigiaTrip(trip).map(x => Number(x.ordine) || 0)) + 1;
+    closeModal();
+    if (ex) {
+      const p = { id: ex.id, voce, gruppo, ordine: gruppo === (ex.gruppo || "Altro") ? Number(ex.ordine) || 0 : fondo };
+      scriviValigia("valigia.save", p, () => Object.assign(ex, p));
+    } else {
+      const r = { id: uid(), trasferta_id: trip, voce, gruppo, fatto: "", ordine: fondo };
+      scriviValigia("valigia.save", r, d => { d.valigia = (d.valigia || []).concat([Object.assign({ persona: cfg.who }, r)]); });
+    }
+  });
+  if (ex) $("#vDel").addEventListener("click", () => { closeModal(); scriviValigia("valigia.del", { id: ex.id }, d => { d.valigia = (d.valigia || []).filter(x => x.id !== ex.id); }); });
 }
 
 function bars(obj, total) {
@@ -1019,7 +1142,55 @@ const SET_LISTE = {
 };
 function bozzaImpostazioni() {
   const s = D.settings || {};
-  return { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice() };
+  return { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice(),
+    valigia: modelloValigia().map(g => ({ gruppo: String(g.gruppo || ""), voci: (g.voci || []).slice() })) };
+}
+// T16: la mia valigia, il modello da cui nasce la lista di una trasferta. Una card per
+// gruppo; stessa bozza e stesso Salva delle liste qui sopra. Il server la scrive su
+// valigia_<chi salva>: quella dell'altro non arriva nemmeno a questa app.
+function setValigia() {
+  const gs = setBozza.valigia;
+  return `<h2>La mia valigia</h2><div class="muted" style="margin:-4px 0 8px">La lista da cui nasce la valigia di una trasferta, a gruppi e in quest'ordine. È solo tua.</div>
+    ${gs.map((g, gi) => `<div class="card list setlist">
+      <div class="item"><div class="grow tap" onclick="valRinominaG(${gi})"><b>${esc(g.gruppo)}</b> <span class="muted">· ${g.voci.length}</span></div>
+        <div class="ord"><button class="obtn" ${gi === 0 ? "disabled" : ""} onclick="valSpostaG(${gi},-1)">▲</button><button class="obtn" ${gi === gs.length - 1 ? "disabled" : ""} onclick="valSpostaG(${gi},1)">▼</button><button class="obtn" onclick="valTogliG(${gi})">✕</button></div></div>
+      ${g.voci.map((v, vi) => `<div class="item" style="padding-left:12px">
+        <div class="grow tap" onclick="valRinomina(${gi},${vi})">${esc(v)}</div>
+        <div class="ord"><button class="obtn" ${vi === 0 ? "disabled" : ""} onclick="valSposta(${gi},${vi},-1)">▲</button><button class="obtn" ${vi === g.voci.length - 1 ? "disabled" : ""} onclick="valSposta(${gi},${vi},1)">▼</button><button class="obtn" onclick="valTogli(${gi},${vi})">✕</button></div></div>`).join("")}
+      <button class="btn sm block" style="margin-top:6px" onclick="valAggiungi(${gi})">＋ voce</button></div>`).join("")}
+    <button class="btn block" onclick="valAggiungiG()">＋ gruppo</button>`;
+}
+const scambia = (a, i, j) => { if (j < 0 || j >= a.length) return; const t = a[i]; a[i] = a[j]; a[j] = t; renderFermo(); };
+function valSpostaG(gi, d) { scambia(setBozza.valigia, gi, gi + d); }
+function valSposta(gi, vi, d) { scambia(setBozza.valigia[gi].voci, vi, vi + d); }
+function valTogli(gi, vi) { setBozza.valigia[gi].voci.splice(vi, 1); renderFermo(); }
+async function valTogliG(gi) {
+  const g = setBozza.valigia[gi];
+  if (g.voci.length && !await chiediConferma("Togliere il gruppo?", `<b>${esc(g.gruppo)}</b> e le sue ${g.voci.length} voci escono dalla lista. Finché non salvi, sul foglio non cambia niente.`, { si: "Togli", rosso: true })) return;
+  setBozza.valigia.splice(gi, 1); renderFermo();
+}
+async function valRinominaG(gi) {
+  const g = setBozza.valigia[gi], n = await chiediTesto("Nome del gruppo", g.gruppo, "es. Documenti");
+  if (!n || n === g.gruppo) return;
+  if (setBozza.valigia.some(x => x !== g && x.gruppo === n)) return toast("C'è già un gruppo così");
+  g.gruppo = n; renderFermo();
+}
+async function valAggiungiG() {
+  const n = await chiediTesto("Nuovo gruppo", "", "es. Palestra");
+  if (!n) return;
+  if (setBozza.valigia.some(x => x.gruppo === n)) return toast("C'è già");
+  setBozza.valigia.push({ gruppo: n, voci: [] }); renderFermo();
+}
+async function valAggiungi(gi) {
+  const n = await chiediTesto("Nuova voce · " + setBozza.valigia[gi].gruppo, "", "es. Passaporto");
+  if (!n) return;
+  if (setBozza.valigia[gi].voci.indexOf(n) < 0) setBozza.valigia[gi].voci.push(n); else toast("C'è già");
+  renderFermo();
+}
+async function valRinomina(gi, vi) {
+  const a = setBozza.valigia[gi].voci, n = await chiediTesto("Modifica", a[vi], "es. Passaporto");
+  if (!n || n === a[vi]) return;
+  a[vi] = n; renderFermo();
 }
 // Ridisegna senza riportare in cima lo scorrimento: spostare l'ultima voce di
 // quindici con ▲▼, e ritrovarsi ogni volta in testa alla pagina, è inutilizzabile.
@@ -1066,6 +1237,7 @@ function vImpostazioni() {
     ${setLista("chkQ")}
     <h2>Valute</h2><div class="muted" style="margin:-4px 0 8px">Quelle che si possono scegliere nel modulo spesa, dietro "altre…". Tocca una pasticca per toglierla.</div>
     <div class="card"><div class="chips">${setBozza.valute.map((v, i) => `<button type="button" onclick="setTogliVal(${i})">${esc(v)} ✕</button>`).join("")}<button type="button" onclick="setAggiungiVal()">＋ Aggiungi</button></div></div>
+    ${setValigia()}
     <button class="btn primary block" onclick="saveSettings()">Salva impostazioni</button>
     <div class="muted" style="margin-top:6px">Finché non salvi, le modifiche restano su questo telefono.</div>
     <h2>Collegamento</h2><div class="card">
@@ -1077,6 +1249,7 @@ function impostazioniAiuto() {
     `Le tre liste si modificano qui e partono solo con <b>Salva impostazioni</b>: tocca una voce per riscriverla, ▲▼ per spostarla, ✕ per toglierla.`,
     `Togliere una <b>categoria</b> non tocca le spese già registrate: restano con la loro, e il numero a destra dice quante sono.`,
     `Le due <b>checklist</b> valgono per le trasferte nuove, non per quelle già create. Casa e Altro nascono senza.`,
+    `<b>La mia valigia</b> vale per le liste nuove: quelle già preparate non cambiano. È solo tua — ${esc(other(cfg.who))} ha la sua e non vede questa. Tocca il nome di un gruppo o una voce per riscriverli.`,
     `<b>Scollega</b> toglie il collegamento da questo telefono soltanto: sul foglio non cambia niente, e per rientrare serve il link personale che hai ricevuto.`,
   ]);
 }
@@ -1092,7 +1265,9 @@ async function saveSettings() {
   const b = setBozza || bozzaImpostazioni();
   // Stesso payload di sempre. Le due liste hanno la loro chiave (Q4);
   // checklist_template resta sul foglio come ripiego del torneo.
-  const p = { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice() };
+  // T16: valigia_template e' la MIA valigia: il server la scrive su valigia_<chi>.
+  const p = { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice(),
+    valigia_template: b.valigia.map(g => ({ gruppo: g.gruppo, voci: g.voci.slice() })) };
   await write("settings.save", p, d => Object.assign(d.settings, p));
   setBozza = null; toast("Impostazioni salvate");
 }
@@ -2272,8 +2447,8 @@ function formTrip(id, preset) {
 }
 async function delTrip(id) {
   const t = (D.trasferte || []).find(x => x.id === id);
-  if (!await chiediConferma("Eliminare la trasferta?", `${t ? "<b>" + esc(t.nome) + "</b> e la sua" : "La scheda e la"} checklist spariscono, e con loro l'evento nel calendario. <b>Le spese restano</b>: sono legate al nome, e la trasferta tornerà nell'elenco come carta tratteggiata, senza scheda.`, { si: "Elimina", rosso: true })) return;
-  await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); });
+  if (!await chiediConferma("Eliminare la trasferta?", `${t ? "<b>" + esc(t.nome) + "</b> e la sua" : "La scheda e la"} checklist spariscono, con la valigia di tutti e due e l'evento nel calendario. <b>Le spese restano</b>: sono legate al nome, e la trasferta tornerà nell'elenco come carta tratteggiata, senza scheda.`, { si: "Elimina", rosso: true })) return;
+  await write("trasferta.del", { id }, d => { d.trasferte = d.trasferte.filter(t => t.id !== id); d.checklist = d.checklist.filter(c => c.trasferta_id !== id); d.valigia = (d.valigia || []).filter(v => v.trasferta_id !== id); });
   go("trasferte");
 }
 function duplicaTrip(id) {
