@@ -211,3 +211,7 @@ details.altro .field{margin-top:8px}
 .chips.scroll{flex-wrap:nowrap;overflow-x:auto;margin-top:0;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .chips.scroll::-webkit-scrollbar{display:none}
 .chips.scroll button{flex:0 0 auto;white-space:nowrap}
+/* T17: il meteo in cima alla valigia, e il selettore Quando dei gruppi in Impostazioni */
+.card.meteo{border-color:#cfdff3}
+.meteo-avviso{margin-top:8px;padding:8px 10px;border-radius:10px;background:#fff3d6;color:#8a5a00;font-weight:600;font-size:14px}
+.setlist select.se{min-width:0;padding:7px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);font-size:14px;color:var(--ink)}

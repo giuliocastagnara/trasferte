@@ -743,6 +743,7 @@ function tripAiuto(id) {
     `<b>In testa</b>: <i>Costo tuo</i> è la tua quota delle spese di questa settimana, <i>${esc(cfg.who === "Giulio" ? "Compenso" : "Vincite")}</i> quello che ti ha reso, <i>Netto</i> la differenza. I primi due restano vuoti finché la trasferta non è finita: prima il compenso non è ancora stato scritto e direbbero solo una perdita. Il conto e il bonifico lì sotto sono solo di questa trasferta.`,
     `Quanto va sui <b>libri</b> di ciascuno non sta più qui: è un numero da commercialista e si guarda una volta all'anno in <b>Soldi</b>. E quello dell'altra persona, su questa pagina, sarebbe stato anche <b>sbagliato</b>: le spese personali dell'altro non arrivano a questa app.`,
     `<b>Valigia</b>: è <b>solo tua</b>, ${esc(other(cfg.who))} ha la sua e non vede questa. Nasce con un tocco dalla tua lista (Impostazioni → <i>La mia valigia</i>) oppure vuota. Il cerchio è la spunta, un tocco una scrittura, e funziona anche <b>senza rete</b>: parte appena torna. Il resto della riga apre la voce: nome, gruppo, frecce, elimina.`,
+    `<b>Meteo</b>, in cima alla valigia: con la città in Info, la previsione (entro ${METEO_SOGLIE.giorni} giorni) o com'è di solito, e le voci dei tuoi gruppi <i>Se piove</i>, <i>Se fa freddo</i>… che mancano. Entrano solo con <i>Aggiungi</i>; ✕ su una voce la scarta per questa trasferta. Senza rete resta l'ultimo meteo, con l'ora.`,
     `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
     `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
   ]);
@@ -772,14 +773,16 @@ function scriviValigia(action, payload, applyLocal) {
 }
 function tripValigiaSeg(t) {
   const vs = valigiaTrip(t.id);
+  // T17: la card del meteo sta in cima, sopra i gruppi (o sopra "Prepara")
+  const meteo = meteoCard(t);
   if (!vs.length) {
-    const nv = modelloValigia().reduce((a, g) => a + (g.voci || []).length, 0);
-    return `<div class="empty">La valigia per questa trasferta non c'è ancora.<br><span class="small">È solo tua: ${esc(other(cfg.who))} non la vede.</span></div>
+    const nv = righePrepara(modelloValigia(), meteoCondTrip(t)).length;
+    return `${meteo}<div class="empty">La valigia per questa trasferta non c'è ancora.<br><span class="small">È solo tua: ${esc(other(cfg.who))} non la vede.</span></div>
       <button class="btn primary block" onclick="preparaValigia('${t.id}')" ${nv ? "" : "disabled"}>Prepara dalla mia lista${nv ? ` · ${nv} voci` : ""}</button>
       <button class="btn block" style="margin-top:8px" onclick="formValigia(null,'${t.id}')">Parti vuota</button>`;
   }
   const mancano = vs.filter(v => v.fatto !== "si").length;
-  return `<div class="row between"><h2 style="margin-top:6px">Valigia <span class="muted">· ${mancano ? mancano + " da mettere" : "tutto dentro"}</span></h2><button class="btn sm" onclick="formValigia(null,'${t.id}')">＋ voce</button></div>
+  return `${meteo}<div class="row between"><h2 style="margin-top:6px">Valigia <span class="muted">· ${mancano ? mancano + " da mettere" : "tutto dentro"}</span></h2><button class="btn sm" onclick="formValigia(null,'${t.id}')">＋ voce</button></div>
     ${gruppiValigia(vs).map(g => `<div class="card"><div><b>${esc(g.nome)}</b> <span class="muted">· ${g.voci.filter(v => v.fatto === "si").length}/${g.voci.length}</span></div>${g.voci.map(rigaValigia).join("")}</div>`).join("")}`;
 }
 // Q3: una voce messa resta al suo posto, barrata. In valigia si cerca per gruppo, e
@@ -792,10 +795,12 @@ function rigaValigia(v) {
 }
 // Un tocco dopo l'altro non crea due liste: dopo il primo la lista c'e' gia' in
 // locale e il segmento non mostra piu' il bottone. Due telefoni: ci pensa il server.
+// T17: i gruppi con `se` entrano solo se il meteo c'e' gia' e la condizione vale (il
+// tocco su Prepara e' gia' la conferma); senza meteo arrivano dopo, come suggerimenti.
 function preparaValigia(tid) {
   if (valigiaTrip(tid).length) return;
-  const righe = [];
-  modelloValigia().forEach(g => (g.voci || []).forEach(v => righe.push({ id: uid(), gruppo: g.gruppo, voce: v, ordine: righe.length + 1 })));
+  const t = (D.trasferte || []).find(x => x.id === tid);
+  const righe = righePrepara(modelloValigia(), t ? meteoCondTrip(t) : null).map((r, i) => ({ id: uid(), gruppo: r.gruppo, voce: r.voce, ordine: i + 1 }));
   if (!righe.length) return toast("La tua lista è vuota: riempila in Impostazioni");
   scriviValigia("valigia.crea", { trasferta_id: tid, righe }, d => {
     d.valigia = (d.valigia || []).concat(righe.map(r => Object.assign({ trasferta_id: tid, persona: cfg.who, fatto: "" }, r)));
@@ -863,6 +868,255 @@ function formValigia(id, tid) {
     }
   });
   if (ex) $("#vDel").addEventListener("click", () => { closeModal(); scriviValigia("valigia.del", { id: ex.id }, d => { d.valigia = (d.valigia || []).filter(x => x.id !== ex.id); }); });
+}
+
+// ---------------------------------------------------------------- METEO (T17)
+// Il meteo della trasferta SUGGERISCE voci per la valigia: i gruppi del modello con
+// `se` (Impostazioni → La mia valigia) si propongono quando la condizione vale. Non
+// aggiunge e non toglie mai niente da solo: le voci entrano con un tocco su Aggiungi,
+// o con "Prepara dalla mia lista", che e' gia' un tocco. Lo chiede la app a Open-Meteo
+// (niente chiave, parte solo il posto e le date); cache in localStorage.
+// Questa prima parte non tocca ne' il DOM ne' la rete: test_meteo.js la ritaglia e la
+// esegue con risposte di Open-Meteo salvate.
+const METEO_SOGLIE = {
+  fresco: 20,          // minima < 20° in almeno un giorno
+  freddo: 15,          // minima <= 15° (e allora vale anche fresco)
+  caldo: 28,           // massima > 28°
+  pioggia: 40,         // previsione: probabilita' > 40%
+  pioggiaMm: 1,        // di solito: almeno 1 mm…
+  pioggiaQuota: 1 / 3, // …in piu' di un terzo dei giorni
+  vento: 20,           // vento medio >= 20 mph LO STESSO GIORNO di una minima < fresco
+  giorni: 16,          // la previsione arriva a oggi + 15; oltre, le medie dei 3 anni prima
+  ore: 3,              // una previsione in cache vale 3 ore (le medie per sempre)
+};
+const METEO_SE = { fresco: "Se fa fresco", freddo: "Se fa freddo", caldo: "Se fa caldo", pioggia: "Se piove", vento: "Se fa fresco e tira vento" };
+const METEO_BREVE = { fresco: "Fa fresco", freddo: "Fa freddo", caldo: "Fa caldo", pioggia: "Piove", vento: "Fresco e ventoso" };
+const METEO_DAILY_P = "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max";
+const METEO_DAILY_A = "temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max";
+const GIORNI_SETT = ["dom", "lun", "mar", "mer", "gio", "ven", "sab"];
+const MESI_BREVI = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+// Il confronto fra voci: senza maiuscole, accenti e spazi in piu'
+const normVoce = s => String(s == null ? "" : s).normalize("NFD").replace(/[̀-ͯ]/g, "").trim().replace(/\s+/g, " ").toLowerCase();
+const giornoIso = s => String(s || "").slice(0, 10);
+const piuGiorni = (s, n) => { const d = new Date(s + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+// La stessa data k anni prima; il 29 febbraio diventa il 28
+const annoPrima = (s, k) => { const r = (Number(s.slice(0, 4)) - k) + s.slice(4); return r.slice(5) === "02-29" && new Date(r + "T12:00:00Z").getUTCMonth() !== 1 ? r.slice(0, 8) + "28" : r; };
+const giornoBreve = s => { const d = new Date(s + "T12:00:00Z"); return GIORNI_SETT[d.getUTCDay()] + " " + d.getUTCDate(); };
+const dataBreve = s => { const d = new Date(s + "T12:00:00Z"); return d.getUTCDate() + " " + MESI_BREVI[d.getUTCMonth()]; };
+function elencoDate(da, a) { const out = []; for (let d = da; d <= a && out.length < 400; d = piuGiorni(d, 1)) out.push(d); return out; }
+
+// Cosa chiedere oggi. Dentro i 16 giorni la previsione, tagliata a oggi + 15 (il resto
+// non si inventa: la card dice fino a che giorno arriva). Oltre, "di solito". Su una
+// trasferta in corso si parte da oggi.
+function meteoPiano(inizio, fine, oggi) {
+  inizio = giornoIso(inizio); fine = giornoIso(fine);
+  if (!inizio || !fine || fine < oggi) return null;
+  const da = inizio > oggi ? inizio : oggi, ultimo = piuGiorni(oggi, METEO_SOGLIE.giorni - 1);
+  if (da <= ultimo) return { tipo: "previsione", da, a: fine < ultimo ? fine : ultimo, fine };
+  return { tipo: "solito", da, a: fine, fine };
+}
+const meteoUrlGeo = citta => `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(String(citta).trim())}&count=5&language=it`;
+const meteoUrlPrev = (g, da, a) => `https://api.open-meteo.com/v1/forecast?latitude=${g.lat}&longitude=${g.lon}&daily=${METEO_DAILY_P}&wind_speed_unit=mph&timezone=auto&start_date=${da}&end_date=${a}`;
+const meteoUrlArch = (g, da, a) => `https://archive-api.open-meteo.com/v1/archive?latitude=${g.lat}&longitude=${g.lon}&daily=${METEO_DAILY_A}&wind_speed_unit=mph&timezone=auto&start_date=${da}&end_date=${a}`;
+// Il paese si scrive come viene (Italia, USA, China…): Open-Meteo risponde in italiano
+// ("Stati Uniti", "Cina") e con il codice a due lettere, e si confrontano tutti e due.
+const PAESI_ALIAS = {
+  US: "usa|us|stati uniti|stati uniti d'america|united states|america", GB: "uk|regno unito|united kingdom|gran bretagna|inghilterra|england|scozia|scotland|galles|wales",
+  CN: "china|cina", KR: "corea|korea|south korea|corea del sud", TW: "taiwan", JP: "japan|giappone", TH: "thailand|tailandia|thailandia",
+  SA: "saudi arabia|arabia saudita", AE: "uae|emirati|emirati arabi|emirati arabi uniti|united arab emirates", MA: "morocco|marocco",
+  ZA: "south africa|sudafrica|sud africa", MU: "mauritius", KE: "kenya", AU: "australia", NZ: "new zealand|nuova zelanda",
+  IT: "italy|italia", FR: "france|francia", ES: "spain|spagna", CH: "switzerland|svizzera", DE: "germany|germania", AT: "austria",
+  NL: "netherlands|olanda|paesi bassi|holland", BE: "belgium|belgio", IE: "ireland|irlanda", CZ: "czech republic|czechia|repubblica ceca|cechia",
+  SE: "sweden|svezia", NO: "norway|norvegia", DK: "denmark|danimarca", FI: "finland|finlandia", PT: "portugal|portogallo",
+  MX: "mexico|messico", CA: "canada", SG: "singapore", MY: "malaysia", IN: "india",
+};
+// Venice, FL non e' Venezia: si prende il primo risultato del paese della trasferta.
+// Se nessuno e' di quel paese si prende il primo, e la card scrive il paese trovato.
+function meteoScegliLuogo(risultati, paese) {
+  const rs = (risultati || []).filter(r => r && r.latitude != null && r.longitude != null);
+  if (!rs.length) return null;
+  const p = normVoce(paese);
+  const va = r => !p || [normVoce(r.country), normVoce(r.country_code)].concat(String(PAESI_ALIAS[r.country_code] || "").split("|")).includes(p);
+  const r = rs.find(va) || rs[0];
+  return { lat: r.latitude, lon: r.longitude, nome: r.name || "", paese: r.country || "", giusto: va(r) };
+}
+// Una risposta della previsione → [{data, max, min, pioggia (%), vento (mph)}]
+function meteoGiorniPrev(r) {
+  const d = (r && r.daily) || {}, col = k => d[k] || [];
+  return col("time").map((data, i) => ({ data, max: col("temperature_2m_max")[i], min: col("temperature_2m_min")[i], pioggia: col("precipitation_probability_max")[i], vento: col("wind_speed_10m_max")[i] }))
+    .filter(g => g.max != null && g.min != null);
+}
+// Le risposte dell'archivio (le stesse date negli anni prima) → la media giorno per
+// giorno. Per la pioggia non c'e' la probabilita': si conta in quanti anni quel giorno
+// ha fatto almeno 1 mm (mmGiorni su anni).
+function meteoGiorniSolito(anni, date) {
+  const media = a => { const v = a.filter(x => x != null && !isNaN(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+  return date.map((data, k) => {
+    const v = (anni || []).map(r => { const d = (r && r.daily) || {}; return { max: (d.temperature_2m_max || [])[k], min: (d.temperature_2m_min || [])[k], mm: (d.precipitation_sum || [])[k], vento: (d.wind_speed_10m_max || [])[k] }; })
+      .filter(x => x.max != null && x.min != null);
+    if (!v.length) return null;
+    const mm = v.filter(x => x.mm != null);
+    return { data, max: media(v.map(x => x.max)), min: media(v.map(x => x.min)), vento: media(v.map(x => x.vento)), mmGiorni: mm.filter(x => x.mm >= METEO_SOGLIE.pioggiaMm).length, anni: mm.length };
+  }).filter(Boolean);
+}
+// Le condizioni sulle giornate della trasferta. freddo implica fresco (15 < 20), e caldo
+// e freddo possono valere insieme (deserto). vento = fresco E ventoso nello stesso giorno.
+function meteoCondizioni(m) {
+  const S = METEO_SOGLIE, gs = (m && m.giorni) || [];
+  const c = { fresco: gs.some(g => g.min < S.fresco), freddo: gs.some(g => g.min <= S.freddo), caldo: gs.some(g => g.max > S.caldo) };
+  if (m && m.tipo === "solito") {
+    const n = gs.reduce((a, g) => a + (g.anni || 0), 0), p = gs.reduce((a, g) => a + (g.mmGiorni || 0), 0);
+    c.quotaPioggia = n ? p / n : 0;
+    c.pioggia = c.quotaPioggia > S.pioggiaQuota;
+  } else {
+    c.giorniPioggia = gs.filter(g => g.pioggia > S.pioggia).length;
+    c.pioggia = c.giorniPioggia > 0;
+  }
+  c.ventoGiorni = gs.filter(g => g.vento != null && g.vento >= S.vento && g.min < S.fresco);
+  c.vento = c.ventoGiorni.length > 0;
+  return c;
+}
+// Gli avvisi del vento: uno per giorno, al massimo tre, poi "+N giorni". Valgono anche
+// quando le voci sono gia' tutte in valigia: le voci sono la valigia, l'avviso e' il tempo.
+function meteoAvvisi(c) {
+  const vg = (c && c.ventoGiorni) || [];
+  const out = vg.slice(0, 3).map(g => `Fresco e ventoso ${giornoBreve(g.data)}: ${Math.round(g.min)}°, vento ${Math.round(g.vento)} mph`);
+  if (vg.length > 3) out.push(`+${vg.length - 3} giorni`);
+  return out;
+}
+// "24–31° · pioggia probabile 3 giorni · vento fino a 18 mph"
+function meteoRiassunto(m, c) {
+  const gs = (m && m.giorni) || []; if (!gs.length) return "";
+  const lo = Math.round(Math.min(...gs.map(g => g.min))), hi = Math.round(Math.max(...gs.map(g => g.max)));
+  const vv = gs.map(g => g.vento).filter(x => x != null), parti = [lo === hi ? `${lo}°` : `${lo}–${hi}°`];
+  if (m.tipo === "solito") { const n = Math.round(c.quotaPioggia * gs.length); parti.push(n ? `pioggia in ${n} giorn${n === 1 ? "o" : "i"} su ${gs.length}` : "pioggia rara"); }
+  else parti.push(c.giorniPioggia ? `pioggia probabile ${c.giorniPioggia} giorn${c.giorniPioggia === 1 ? "o" : "i"}` : "pioggia poco probabile");
+  if (vv.length) parti.push(`vento fino a ${Math.round(Math.max(...vv))} mph`);
+  return parti.join(" · ");
+}
+// Cosa suggerire: le voci dei gruppi `se` che valgono, che NON sono gia' nella lista (in
+// qualunque gruppo) e che non si sono scartate con ✕. Una voce in due gruppi: il primo.
+function meteoSuggerimenti(c, modello, lista, scartate) {
+  const gia = new Set((lista || []).map(x => normVoce(typeof x === "string" ? x : x.voce)).concat((scartate || []).map(normVoce)));
+  const out = [];
+  (modello || []).forEach(g => {
+    if (!g || !g.se || !c || !c[g.se]) return;
+    const voci = (g.voci || []).filter(v => { const k = normVoce(v); if (!k || gia.has(k)) return false; gia.add(k); return true; });
+    if (voci.length) out.push({ se: g.se, gruppo: g.gruppo, voci });
+  });
+  return out;
+}
+// "Prepara dalla mia lista": i gruppi senza `se` sempre, quelli con `se` solo se il meteo
+// c'e' e la condizione vale (c = null: niente meteo, entrano solo i gruppi normali).
+// Una voce che c'e' gia' in un gruppo prima non si ripete.
+function righePrepara(modello, c) {
+  const gia = new Set(), righe = [];
+  (modello || []).forEach(g => {
+    if (!g || (g.se && !(c && c[g.se]))) return;
+    (g.voci || []).forEach(v => { const k = normVoce(v); if (!k || gia.has(k)) return; gia.add(k); righe.push({ gruppo: g.gruppo, voce: v }); });
+  });
+  return righe;
+}
+// La cache vale ancora? Le medie per sempre; la previsione 3 ore e sulle stesse date. Una
+// cache "di solito" non vale piu' quando la partenza entra nei 16 giorni.
+function meteoFresco(c, piano, ora) {
+  if (c && c.nessuno) return true;
+  if (!c || !piano) return false;
+  if (c.tipo !== piano.tipo || c.da !== piano.da || c.a !== piano.a) return false;
+  return c.tipo === "solito" || ora - c.ts < METEO_SOGLIE.ore * 3600e3;
+}
+
+// ---- METEO, seconda parte: rete, cache e card (da qui in giu' si tocca il DOM)
+const meteoInCorso = {}, meteoTentato = {};
+const meteoServe = t => !!(t && t.inizio && t.fine && giornoIso(t.fine) >= today() && String(t.tipo || "").toLowerCase() !== "casa");
+const meteoChiave = t => "meteo|" + [t.citta, t.paese].map(x => String(x || "").trim()).join("|") + "|" + giornoIso(t.inizio) + "|" + giornoIso(t.fine);
+const meteoChiaveNo = tid => "meteoNo|" + tid;
+async function meteoGet(u) { const r = await fetch(u); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }
+async function meteoCarica(t) {
+  const k = meteoChiave(t);
+  if (meteoInCorso[k]) return;
+  meteoInCorso[k] = 1; meteoTentato[k] = Date.now();
+  try {
+    const piano = meteoPiano(t.inizio, t.fine, today()); if (!piano) return;
+    // le coordinate valgono per sempre, finche' non cambiano citta' o paese
+    const gk = "geo|" + String(t.citta).trim() + "|" + String(t.paese || "").trim();
+    let geo = LS.get(gk, null);
+    if (!geo) { geo = meteoScegliLuogo((await meteoGet(meteoUrlGeo(t.citta))).results, t.paese) || { nessuno: true }; LS.set(gk, geo); }
+    if (geo.nessuno) { LS.set(k, { nessuno: true, ts: Date.now() }); return; }
+    let giorni;
+    if (piano.tipo === "previsione") giorni = meteoGiorniPrev(await meteoGet(meteoUrlPrev(geo, piano.da, piano.a)));
+    else giorni = meteoGiorniSolito(await Promise.all([1, 2, 3].map(y => meteoGet(meteoUrlArch(geo, annoPrima(piano.da, y), annoPrima(piano.a, y))))), elencoDate(piano.da, piano.a));
+    if (!giorni.length) return;
+    LS.set(k, { tipo: piano.tipo, da: piano.da, a: piano.a, fine: piano.fine, luogo: { nome: geo.nome, paese: geo.paese, giusto: geo.giusto }, giorni, ts: Date.now() });
+  } catch (e) {
+    // senza rete o Open-Meteo giu': resta la cache se c'e', altrimenti niente card. Niente errori a video.
+  } finally {
+    delete meteoInCorso[k];
+    if (view === "trip" && viewArg === t.id && tripSeg === "valigia") renderFermo();
+  }
+}
+// Il meteo in cache di una trasferta, senza le giornate gia' passate (trasferta in corso)
+function meteoTrip(t) {
+  if (!meteoServe(t) || !String(t.citta || "").trim()) return null;
+  const c = LS.get(meteoChiave(t), null);
+  if (!c || c.nessuno) return null;
+  const oggi = today();
+  const m = Object.assign({}, c, { giorni: (c.giorni || []).filter(g => c.tipo === "solito" || g.data >= oggi) });
+  return m.giorni.length ? m : null;
+}
+const meteoCondTrip = t => { const m = meteoTrip(t); return m ? meteoCondizioni(m) : null; };
+const meteoSugTrip = t => { const c = meteoCondTrip(t); return c ? meteoSuggerimenti(c, modelloValigia(), valigiaTrip(t.id), LS.get(meteoChiaveNo(t.id), [])) : []; };
+const oraBreve = ts => { const d = new Date(ts), hh = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); return d.toDateString() === new Date().toDateString() ? "alle " + hh : `il ${d.getDate()} ${MESI_BREVI[d.getMonth()]} alle ${hh}`; };
+// La card in cima al segmento Valigia. Solo trasferte non passate e non "casa" (Q3).
+function meteoCard(t) {
+  if (!meteoServe(t)) return "";
+  if (!String(t.citta || "").trim()) return `<div class="card meteo tap" onclick="setTripSeg('info')"><span class="muted">☁️ Aggiungi la città in <b>Info</b> per vedere il meteo</span></div>`;
+  const k = meteoChiave(t), c = LS.get(k, null), ora = Date.now();
+  const carica = !meteoFresco(c, meteoPiano(t.inizio, t.fine, today()), ora) && navigator.onLine && !meteoInCorso[k] && ora - (meteoTentato[k] || 0) > 60e3;
+  if (carica) setTimeout(() => meteoCarica(t), 0);
+  if (c && c.nessuno) return `<div class="card meteo tap" onclick="setTripSeg('info')"><span class="muted">☁️ Non trovo <b>${esc(t.citta)}</b>: controlla il nome in Info</span></div>`;
+  const m = meteoTrip(t);
+  if (!m) return carica || meteoInCorso[k] ? `<div class="card meteo"><span class="muted">⏳ Meteo di ${esc(t.citta)}…</span></div>` : "";
+  const cond = meteoCondizioni(m), vs = valigiaTrip(t.id);
+  const luogo = esc(m.luogo.nome || t.citta) + (m.luogo.giusto ? "" : ", " + esc(m.luogo.paese));
+  const parziale = m.tipo === "previsione" && m.a < m.fine ? ` · previsione fino al ${dataBreve(m.a)}` : "";
+  let sug = "";
+  if (vs.length) {
+    const ss = meteoSuggerimenti(cond, modelloValigia(), vs, LS.get(meteoChiaveNo(t.id), [])), n = ss.reduce((a, s) => a + s.voci.length, 0);
+    sug = n ? `${ss.map(s => `<div class="small" style="margin-top:10px"><b>${esc(METEO_BREVE[s.se])}</b></div><div class="chips inline">${s.voci.map((v, i) => `<button type="button" onclick="meteoNo('${t.id}','${s.se}',${i})">${esc(v)} ✕</button>`).join("")}</div>`).join("")}
+        <button class="btn primary block" style="margin-top:10px" onclick="meteoAggiungi('${t.id}')">Aggiungi ${n === 1 ? "la voce" : n + " voci"}</button>`
+      : `<div class="small muted" style="margin-top:6px">Per questo tempo la valigia ha già tutto.</div>`;
+  } else {
+    const gs = modelloValigia().filter(g => g.se && cond[g.se] && (g.voci || []).length).map(g => g.gruppo);
+    if (gs.length) sug = `<div class="small" style="margin-top:6px">Prepara mette dentro anche: <b>${gs.map(esc).join(" · ")}</b></div>`;
+  }
+  return `<div class="card meteo">
+    <div class="row between"><b>☁️ ${luogo}</b><span class="pill ${m.tipo === "solito" ? "grey" : "blue"}">${m.tipo === "solito" ? "di solito" : "previsione"}</span></div>
+    <div class="muted">${dataBreve(giornoIso(t.inizio))} → ${dataBreve(giornoIso(t.fine))}${parziale}</div>
+    ${meteoAvvisi(cond).map(a => `<div class="meteo-avviso">⚠ ${esc(a)}</div>`).join("")}
+    <div style="margin-top:6px">${esc(meteoRiassunto(m, cond))}</div>
+    ${sug}
+    <div class="small muted" style="margin-top:8px">aggiornato ${oraBreve(m.ts)}</div></div>`;
+}
+// Aggiungi: le voci suggerite entrano nel gruppo `se` (es. "Se piove"), in fondo alla
+// lista, una valigia.save per voce, in coda come ogni scrittura della valigia (T16).
+function meteoAggiungi(tid) {
+  const t = (D.trasferte || []).find(x => x.id === tid); if (!t) return;
+  const ss = meteoSugTrip(t); if (!ss.length) return;
+  let fondo = Math.max(0, ...valigiaTrip(tid).map(x => Number(x.ordine) || 0)), n = 0;
+  ss.forEach(s => s.voci.forEach(voce => {
+    const r = { id: uid(), trasferta_id: tid, voce, gruppo: s.gruppo, fatto: "", ordine: ++fondo }; n++;
+    scriviValigia("valigia.save", r, d => { d.valigia = (d.valigia || []).concat([Object.assign({ persona: cfg.who }, r)]); });
+  }));
+  toast(n === 1 ? "Aggiunta" : `${n} voci aggiunte`);
+}
+// ✕ = "no grazie": ricordato su QUESTO telefono per questa trasferta. Non e' un dato: se
+// si perde, la voce torna suggerita.
+function meteoNo(tid, se, i) {
+  const t = (D.trasferte || []).find(x => x.id === tid); if (!t) return;
+  const s = meteoSugTrip(t).find(x => x.se === se), v = s && s.voci[i]; if (!v) return;
+  const no = LS.get(meteoChiaveNo(tid), []); no.push(normVoce(v)); LS.set(meteoChiaveNo(tid), no);
+  renderFermo();
 }
 
 function bars(obj, total) {
@@ -1143,7 +1397,15 @@ const SET_LISTE = {
 function bozzaImpostazioni() {
   const s = D.settings || {};
   return { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice(),
-    valigia: modelloValigia().map(g => ({ gruppo: String(g.gruppo || ""), voci: (g.voci || []).slice() })) };
+    valigia: modelloValigia().map(gruppoValigiaPulito) };
+}
+// T17: un gruppo del modello come parte e come torna dal server: `se` solo se e' una
+// condizione nota (un valore sconosciuto = "Sempre"), e un gruppo senza resta come in T16
+function gruppoValigiaPulito(g) {
+  const o = { gruppo: String((g && g.gruppo) || "") };
+  if (g && METEO_SE[g.se]) o.se = g.se;
+  o.voci = ((g && g.voci) || []).slice();
+  return o;
 }
 // T16: la mia valigia, il modello da cui nasce la lista di una trasferta. Una card per
 // gruppo; stessa bozza e stesso Salva delle liste qui sopra. Il server la scrive su
@@ -1154,6 +1416,7 @@ function setValigia() {
     ${gs.map((g, gi) => `<div class="card list setlist">
       <div class="item"><div class="grow tap" onclick="valRinominaG(${gi})"><b>${esc(g.gruppo)}</b> <span class="muted">· ${g.voci.length}</span></div>
         <div class="ord"><button class="obtn" ${gi === 0 ? "disabled" : ""} onclick="valSpostaG(${gi},-1)">▲</button><button class="obtn" ${gi === gs.length - 1 ? "disabled" : ""} onclick="valSpostaG(${gi},1)">▼</button><button class="obtn" onclick="valTogliG(${gi})">✕</button></div></div>
+      <div class="item" style="padding-left:12px"><span class="muted">Quando</span><select class="se grow" onchange="valSe(${gi},this.value)"><option value="">Sempre</option>${Object.keys(METEO_SE).map(k => `<option value="${k}" ${g.se === k ? "selected" : ""}>${esc(METEO_SE[k])}</option>`).join("")}</select></div>
       ${g.voci.map((v, vi) => `<div class="item" style="padding-left:12px">
         <div class="grow tap" onclick="valRinomina(${gi},${vi})">${esc(v)}</div>
         <div class="ord"><button class="obtn" ${vi === 0 ? "disabled" : ""} onclick="valSposta(${gi},${vi},-1)">▲</button><button class="obtn" ${vi === g.voci.length - 1 ? "disabled" : ""} onclick="valSposta(${gi},${vi},1)">▼</button><button class="obtn" onclick="valTogli(${gi},${vi})">✕</button></div></div>`).join("")}
@@ -1164,6 +1427,8 @@ const scambia = (a, i, j) => { if (j < 0 || j >= a.length) return; const t = a[i
 function valSpostaG(gi, d) { scambia(setBozza.valigia, gi, gi + d); }
 function valSposta(gi, vi, d) { scambia(setBozza.valigia[gi].voci, vi, vi + d); }
 function valTogli(gi, vi) { setBozza.valigia[gi].voci.splice(vi, 1); renderFermo(); }
+// T17: "Sempre" toglie la chiave, cosi' il gruppo torna identico a T16
+function valSe(gi, v) { const g = setBozza.valigia[gi]; if (METEO_SE[v]) g.se = v; else delete g.se; renderFermo(); }
 async function valTogliG(gi) {
   const g = setBozza.valigia[gi];
   if (g.voci.length && !await chiediConferma("Togliere il gruppo?", `<b>${esc(g.gruppo)}</b> e le sue ${g.voci.length} voci escono dalla lista. Finché non salvi, sul foglio non cambia niente.`, { si: "Togli", rosso: true })) return;
@@ -1250,6 +1515,7 @@ function impostazioniAiuto() {
     `Togliere una <b>categoria</b> non tocca le spese già registrate: restano con la loro, e il numero a destra dice quante sono.`,
     `Le due <b>checklist</b> valgono per le trasferte nuove, non per quelle già create. Casa e Altro nascono senza.`,
     `<b>La mia valigia</b> vale per le liste nuove: quelle già preparate non cambiano. È solo tua — ${esc(other(cfg.who))} ha la sua e non vede questa. Tocca il nome di un gruppo o una voce per riscriverli.`,
+    `<b>Quando</b>: un gruppo <i>Sempre</i> entra in ogni valigia; gli altri solo se il meteo della trasferta lo chiede, su almeno un giorno: <i>fresco</i> minima sotto ${METEO_SOGLIE.fresco}°, <i>freddo</i> minima ${METEO_SOGLIE.freddo}° o meno (e allora vale anche fresco), <i>caldo</i> massima oltre ${METEO_SOGLIE.caldo}°, <i>piove</i> probabilità oltre il ${METEO_SOGLIE.pioggia}%, <i>fresco e tira vento</i> vento medio da ${METEO_SOGLIE.vento} mph in su <b>lo stesso giorno</b> di una minima sotto ${METEO_SOGLIE.fresco}°. Oltre i ${METEO_SOGLIE.giorni} giorni si guarda com'era di solito nei tre anni prima, e lì <i>piove</i> vuol dire almeno ${METEO_SOGLIE.pioggiaMm} mm in più di un giorno su tre. <b>Il meteo suggerisce, non aggiunge da solo</b>: le voci entrano con un tocco su <i>Aggiungi</i>, e non ne toglie mai.`,
     `<b>Scollega</b> toglie il collegamento da questo telefono soltanto: sul foglio non cambia niente, e per rientrare serve il link personale che hai ricevuto.`,
   ]);
 }
@@ -1267,7 +1533,7 @@ async function saveSettings() {
   // checklist_template resta sul foglio come ripiego del torneo.
   // T16: valigia_template e' la MIA valigia: il server la scrive su valigia_<chi>.
   const p = { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice(),
-    valigia_template: b.valigia.map(g => ({ gruppo: g.gruppo, voci: g.voci.slice() })) };
+    valigia_template: b.valigia.map(gruppoValigiaPulito) };
   await write("settings.save", p, d => Object.assign(d.settings, p));
   setBozza = null; toast("Impostazioni salvate");
 }
