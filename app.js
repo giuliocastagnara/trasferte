@@ -889,8 +889,8 @@ const METEO_SOGLIE = {
   giorni: 16,          // la previsione arriva a oggi + 15; oltre, le medie dei 3 anni prima
   ore: 3,              // una previsione in cache vale 3 ore (le medie per sempre)
 };
-const METEO_SE = { fresco: "Se fa fresco", freddo: "Se fa freddo", caldo: "Se fa caldo", pioggia: "Se piove", vento: "Se fa fresco e tira vento" };
-const METEO_BREVE = { fresco: "Fa fresco", freddo: "Fa freddo", caldo: "Fa caldo", pioggia: "Piove", vento: "Fresco e ventoso" };
+const METEO_SE = { fresco: "Se fa fresco", freddo: "Se fa freddo", caldo: "Se fa caldo", pioggia: "Se piove", vento: "Se fa fresco e tira vento", normale: "Se il tempo è normale" };
+const METEO_BREVE = { fresco: "Fa fresco", freddo: "Fa freddo", caldo: "Fa caldo", pioggia: "Piove", vento: "Fresco e ventoso", normale: "Tempo normale" };
 const METEO_DAILY_P = "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max";
 const METEO_DAILY_A = "temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max";
 const GIORNI_SETT = ["dom", "lun", "mar", "mer", "gio", "ven", "sab"];
@@ -964,6 +964,7 @@ function meteoGiorniSolito(anni, date) {
 function meteoCondizioni(m) {
   const S = METEO_SOGLIE, gs = (m && m.giorni) || [];
   const c = { fresco: gs.some(g => g.min < S.fresco), freddo: gs.some(g => g.min <= S.freddo), caldo: gs.some(g => g.max > S.caldo) };
+  c.normale = !c.fresco && !c.caldo; // ne' fresco ne' caldo in nessun giorno
   if (m && m.tipo === "solito") {
     const n = gs.reduce((a, g) => a + (g.anni || 0), 0), p = gs.reduce((a, g) => a + (g.mmGiorni || 0), 0);
     c.quotaPioggia = n ? p / n : 0;
@@ -1007,12 +1008,12 @@ function meteoSuggerimenti(c, modello, lista, scartate) {
   return out;
 }
 // "Prepara dalla mia lista": i gruppi senza `se` sempre, quelli con `se` solo se il meteo
-// c'e' e la condizione vale (c = null: niente meteo, entrano solo i gruppi normali).
+// c'e' e la condizione vale (c = null: niente meteo, entrano i gruppi normali e quelli `normale`).
 // Una voce che c'e' gia' in un gruppo prima non si ripete.
 function righePrepara(modello, c) {
   const gia = new Set(), righe = [];
   (modello || []).forEach(g => {
-    if (!g || (g.se && !(c && c[g.se]))) return;
+    if (!g || (g.se && !(c ? c[g.se] : g.se === "normale"))) return;
     (g.voci || []).forEach(v => { const k = normVoce(v); if (!k || gia.has(k)) return; gia.add(k); righe.push({ gruppo: g.gruppo, voce: v }); });
   });
   return righe;
