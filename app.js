@@ -2389,7 +2389,7 @@ function moduloSpesa(o) {
       <div class="chips" id="fChipCat">${chipCat.map(c => `<button type="button" data-v="${esc(c)}" class="${c === s.categoria ? "on" : ""}">${esc(catBreve(c))}</button>`).join("")}<button type="button" data-altre="1">altre…</button></div>
       <select id="fCat" class="altre" hidden>${cats.map(c => `<option ${c === s.categoria ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>` : ""}
     <div class="field"><label>Descrizione</label><input id="fDesc" value="${esc(s.descrizione)}" placeholder="${s.tipo === "caddie" ? "es. Caddie Aprile/Maggio" : s.tipo === "regolamento" ? "es. Bonifico saldo Australia" : "es. Cena, Benzina, Hotel…"}"><div class="chips" id="fSugg"></div></div>
-    ${conFile ? `<div class="field"><label>${esc(o.etichettaFile)} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : ""}</label>
+    ${conFile ? `<div class="field"><label>${esc(o.etichettaFile)} ${s.scontrino ? `· <a href="${esc(s.scontrino)}" target="_blank" rel="noopener">apri quello attuale</a>` : o.giaScontrino === "arrivo" ? "· in arrivo…" : ""}</label>
       <div class="row" style="gap:8px"><button type="button" class="btn grow" id="fCam">📷 Scatta</button><button type="button" class="btn grow" id="fGal">🖼 Galleria o file</button></div>
       <input id="fFoto" type="file" accept="image/*" capture="environment" hidden><input id="fFile" type="file" accept="image/*,application/pdf" hidden>
       <div class="muted" id="fFileInfo">${o.notaFile || ""}</div></div>` : ""}
@@ -2507,11 +2507,23 @@ function moduloSpesa(o) {
   // SENZA scontrino, in silenzio. Adesso la preparazione e' una promessa (filePrep)
   // che il Salva aspetta, e se fallisce lo si dice invece di restare li' per sempre.
   let filePrep = null, fileKo = false;
+  // T19: la spesa ha gia' uno scontrino (o ce l'ha in viaggio): un file scelto qui lo
+  // SOSTITUISCE, e si chiede prima. Il 26 set lo stesso PDF riallegato 9 volte aveva
+  // lasciato 9 terne di copie su Drive. Si chiede una volta per modulo.
+  let sostituisciOk = !o.giaScontrino;
   const scegli = (bSel, iSel) => {
     const b = $(bSel), i = $(iSel); if (!b || !i) return;
     b.addEventListener("click", () => i.click());
-    i.addEventListener("change", () => {
+    i.addEventListener("change", async () => {
       const f = i.files[0]; if (!f) return;
+      i.value = "";   // cosi' si puo' riscegliere lo stesso file
+      if (!sostituisciOk) {
+        const arrivo = o.giaScontrino === "arrivo";
+        sostituisciOk = await chiediConferma(arrivo ? "Lo scontrino è già in arrivo" : "Questa spesa ha già lo scontrino",
+          (arrivo ? "Il file mandato prima sta ancora andando su Drive." : "È già su Drive.") + " Se è lo stesso non serve rimandarlo: per correggere categoria, importo o trasferta basta salvare. Un file diverso prende il suo posto.",
+          { si: "Sostituisci", no: "Lascia quello" });
+        if (!sostituisciOk) return;
+      }
       const info = $("#fFileInfo"); info.textContent = "Preparo il file…"; pendingFile = null; fileKo = false;
       const questa = filePrep = prepFile(f).then(pf => {
         if (filePrep !== questa) return;   // nel frattempo ne e' stato scelto un altro
@@ -2520,7 +2532,6 @@ function moduloSpesa(o) {
         if (filePrep !== questa) return;
         pendingFile = null; fileKo = true; info.textContent = "⚠ Non riesco a leggere questo file: sceglilo di nuovo";
       });
-      i.value = "";   // cosi' si puo' riscegliere lo stesso file
     });
   };
   scegli("#fCam", "#fFoto"); scegli("#fGal", "#fFile");
@@ -2581,6 +2592,7 @@ function formSpesa(id, tripName, forceTipo, pre, compId) {
     s: s, ex: !!ex, conTipo: !isMov, conCategoria: s.tipo !== "regolamento", conNote: true,
     conFile: s.tipo !== "caddie", etichettaFile: s.tipo === "regolamento" ? "Fattura" : "Scontrino",
     notaFile: s.tipo === "regolamento" ? "Finisce in tutte e due le cartelle Drive e in quella del commercialista." : "",
+    giaScontrino: !ex ? "" : ex.scontrino ? "si" : scontrinoInArrivo(ex.id) ? "arrivo" : "",
     salva: "Salva", salvaComunque: "Salva comunque",
     onElimina: ex ? (async () => { const nSett = (D.compensi || []).filter(c => c.pagamento_id === ex.id).length; if (!await chiediConferma("Eliminare questa spesa?", "Sparisce la riga dal foglio. Lo scontrino resta su Drive." + (nSett ? ` E ${nSett === 1 ? "la settimana che paga torna" : "le " + nSett + " settimane che paga tornano"} <b>da saldare</b>.` : ""), { si: "Elimina", rosso: true })) return; closeModal(); await write("spesa.del", { id: ex.id }, d => { d.spese = d.spese.filter(x => x.id !== ex.id); allineaCompensiLocale(d, ex, true); }); }) : null,
     onSalva: async (s) => {
