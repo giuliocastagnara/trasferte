@@ -99,12 +99,22 @@ $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeM
 $("#modal2").addEventListener("click", e => { if (e.target.id === "modal2") chiudiModal2(null); });
 
 // ---------------------------------------------------------------- API + offline
+// T20: quante chiamate diverse dal boot sono partite (scritte) e quante stanno ancora
+// aspettando la risposta (inVolo). Servono a reload(): un boot partito PRIMA di una
+// scrittura risponde con il foglio di prima, e buttarlo dentro D farebbe sparire
+// per un momento proprio la cosa appena salvata (una spesa nuova resterebbe fuori
+// finche' non si ricarica di nuovo, perche' la risposta della save la cerca per id).
+let scritte = 0, inVolo = 0;
 async function api(action, payload, { silent } = {}) {
   if (!cfg.api || !cfg.token) throw new Error("App non configurata");
-  const r = await fetch(cfg.api, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ k: cfg.token, a: action, p: payload || {} }) });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || "Errore server");
-  return j.data;
+  const scrive = action !== "boot";
+  if (scrive) { scritte++; inVolo++; }
+  try {
+    const r = await fetch(cfg.api, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ k: cfg.token, a: action, p: payload || {} }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "Errore server");
+    return j.data;
+  } finally { if (scrive) inVolo--; }
 }
 function setNet() { const d = $("#netdot"); d.className = "dot " + (queue.length ? "pending" : (navigator.onLine ? "on" : "")); d.title = queue.length ? queue.length + " modifiche da inviare" : (navigator.onLine ? "online" : "offline"); }
 async function write(action, payload, applyLocal) {
@@ -154,13 +164,40 @@ async function flushQueue() {
 }
 async function reload(silent) {
   if (!cfg.api || !cfg.token) return;
+  ultimoBoot = Date.now();
+  const prima = scritte;
   try {
     const d = await api("boot");
+    // T20: le riletture silenziose (avvio, ritorno sullo schermo, dopo la coda) non
+    // sovrascrivono una scrittura partita nel frattempo: la prossima occasione rilegge.
+    // "Ricarica dati" a mano invece applica sempre, come prima.
+    if (silent && (scritte !== prima || inVolo)) { ultimoBoot = 0; return; }
     D = d; lastError = ""; if (d.who) { cfg.who = d.who; LS.set("cfg", cfg); } LS.set("data", D); if (!silent) toast("Dati aggiornati"); render();
   } catch (e) { lastError = e.message || String(e); if (!silent) toast("Impossibile aggiornare: " + lastError, 4000); if (!D) render(); }
 }
 window.addEventListener("online", () => { setNet(); flushQueue(); });
 window.addEventListener("offline", setNet);
+
+// T20 — quando la app torna sullo schermo si rilegge il foglio. Prima il boot partiva
+// solo all'avvio a freddo, e su iPhone una PWA non riparte quasi mai: torna dalla
+// memoria con i dati di quando la si era lasciata. Una trasferta cambiata da Giulio
+// restava vecchia sul telefono di Alessandra per giorni (e il suo prossimo
+// salvataggio di quella trasferta rimetteva i valori vecchi sul foglio).
+// Non si rilegge: piu' spesso di una volta al minuto, con un foglietto aperto (un
+// modulo a meta' non deve cambiare sotto le dita), con una scrittura in corso.
+const RITORNO_MS = 60 * 1000;
+let ultimoBoot = 0;
+function aggiornaAlRitorno() {
+  if (document.visibilityState !== "visible" || !cfg.api || !cfg.token || !D || !navigator.onLine) return;
+  if (Date.now() - ultimoBoot < RITORNO_MS) return;
+  if (!$("#modal").classList.contains("hidden") || !$("#modal2").classList.contains("hidden")) return;
+  if (syncing || inVolo || Object.keys(inCorso).length) return;
+  // prima le modifiche in coda; flushQueue a volte rilegge da sola, e allora basta quella
+  flushQueue().then(() => { if (!queue.length && Date.now() - ultimoBoot >= RITORNO_MS) reload(true); });
+}
+document.addEventListener("visibilitychange", aggiornaAlRitorno);
+// iOS a volte rimette la pagina dalla cache di navigazione senza visibilitychange
+window.addEventListener("pageshow", e => { if (e.persisted) aggiornaAlRitorno(); });
 
 // ---------------------------------------------------------------- calcoli
 function computeSpesa(s) {
