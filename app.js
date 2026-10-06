@@ -113,8 +113,110 @@ async function api(action, payload, { silent } = {}) {
     const r = await fetch(cfg.api, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ k: cfg.token, a: action, p: payload || {} }) });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || "Errore server");
+    // T21: il server non ha scritto niente perche' nel frattempo l'altro ha cambiato gli
+    // stessi campi. Si chiede e si rimanda: chi ha chiamato riceve la riga salvata, come
+    // sempre. Il `return await` tiene inVolo acceso mentre il foglietto aspetta, cosi'
+    // nessuna rilettura cambia D sotto la domanda.
+    if (j.data && j.data.conflitto) return await risolviConflitto(action, payload, j.data.conflitto);
     return j.data;
   } finally { if (scrive) inVolo--; }
+}
+
+// ---------------------------------------------------------------- T21: copia vecchia
+// Ogni salvataggio di una riga che esiste gia' porta `_base`: per i soli campi CAMBIATI
+// nel modulo, il valore che avevano quando lo si e' aperto. Il server scrive solo quelli
+// (gli altri restano come sul foglio, anche se la copia del telefono era vecchia) e si
+// ferma se l'altro ha cambiato lo stesso campo (unisciRiga_ in Codice.js). Stesse regole
+// di uguaglianza di ugualeCampo_ lato server: cambiane una, cambia l'altra.
+function ugualeCampo(a, b) {
+  const n = v => {
+    if (v === null || v === undefined || v === false) return "";
+    if (v === true) return "si";
+    if (typeof v === "object") return JSON.stringify(v);
+    const s = String(v).trim();
+    return /^-?\d+,\d+$/.test(s) ? s.replace(",", ".") : s;
+  };
+  const x = n(a), y = n(b);
+  if (x === y) return true;
+  return x !== "" && y !== "" && isFinite(x) && isFinite(y) && Math.abs(Number(x) - Number(y)) < 0.005;
+}
+// `prima` = la riga com'era all'apertura del modulo (null per una riga nuova: niente _base).
+// `vecchi` (facoltativo) = da dove leggere il valore di prima, se diverso da `prima`.
+function conBase(payload, prima, vecchi) {
+  if (!prima) return payload;
+  const base = {}, da = vecchi || prima;
+  Object.keys(payload).forEach(k => {
+    if (k === "_base" || k === "file" || k === "modificato" || k === "creato") return;   // i timbri li mette il server
+    if (!ugualeCampo(payload[k], prima[k])) base[k] = da[k] === undefined ? "" : da[k];
+  });
+  return Object.assign({}, payload, { _base: base });
+}
+const T21_COSA = { Trasferte: "la trasferta", Spese: "la spesa", Compensi: "il compenso", Checklist: "la voce della checklist", Documenti: "il documento", NoteSedi: "la nota", Impostazioni: "le impostazioni" };
+const T21_CAMPI = {
+  nome: "Nome", inizio: "Inizio", fine: "Fine", citta: "Città", paese: "Paese", valuta: "Valuta", fuso: "Fuso orario", note: "Note", budget: "Budget",
+  tipo: "Tipo", intercontinentale: "Intercontinentale", archiviata: "Archiviata",
+  data: "Data", trasferta: "Trasferta", categoria: "Categoria", descrizione: "Descrizione", importo: "Importo", cambio: "Cambio",
+  pagato_da: "Pagato da", n_persone: "Persone", conto: "Di chi", scontrino: "Scontrino",
+  fisso: "Fisso", montepremi: "Montepremi", risultato: "Risultato", extra: "Extra", stato: "Stato",
+  voce: "Cosa", link: "Link", codice: "Codice", chi: "Se ne occupa", ordine: "Posizione",
+  persona: "Di chi", url: "File / link", scadenza: "Scadenza", testo: "Testo",
+  categorie: "Categorie", checklist_template_torneo: "Checklist torneo", checklist_template_qualifica: "Checklist qualifica", valute: "Valute", valigia_template: "La mia valigia",
+};
+function t21Valore(v) {
+  if (v === null || v === undefined || v === "") return "(vuoto)";
+  if (Array.isArray(v)) { const s = v.map(x => x && typeof x === "object" ? (x.gruppo || JSON.stringify(x)) : String(x)).join(", "); return s.length > 140 ? s.slice(0, 140) + "…" : s; }
+  if (typeof v === "object") return JSON.stringify(v).slice(0, 140);
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return fmtDY(s);
+  return s.length > 140 ? s.slice(0, 140) + "…" : s;
+}
+// Dopo un conflitto D puo' avere ancora la versione mandata (applicata prima di saperlo):
+// si rilegge il foglio appena finito, che e' l'unica copia giusta.
+const rileggiDopo = () => setTimeout(() => reload(true), 0);
+// non salvata per scelta: write() lo dice senza "Errore:" davanti
+const nonSalvata = m => Object.assign(new Error(m), { scelta: true });
+async function risolviConflitto(action, payload, conf) {
+  const cosa = T21_COSA[conf.tab] || "la riga";
+  if (conf.cancellata) {
+    const si = await chiediConferma("Eliminata nel frattempo", `${esc(cosa.charAt(0).toUpperCase() + cosa.slice(1))} che stavi salvando non c'è più sul foglio: l'ha eliminata ${esc(other(cfg.who))}, o un altro telefono. Rifarla con le tue modifiche?`, { si: "Rifalla", no: "Lasciala eliminata" });
+    rileggiDopo();
+    if (!si) throw nonSalvata("Non salvata: era stata eliminata");
+    const p2 = Object.assign({}, payload); delete p2._base;
+    return await api(action, p2);
+  }
+  const scelte = await chiediQualeTenere(conf, cosa);
+  rileggiDopo();
+  if (!scelte) throw nonSalvata("Non salvata: sul foglio resta com'era");
+  // "La tua": il valore di adesso diventa la base → il server scrive il tuo.
+  // "Sul foglio": il tuo diventa quello di adesso → il server non lo cambia.
+  const p2 = Object.assign({}, payload, { _base: Object.assign({}, payload._base) });
+  conf.campi.forEach((c, i) => { if (scelte[i] === "tuo") p2._base[c.campo] = c.ora; else p2[c.campo] = c.ora; });
+  return await api(action, p2);
+}
+// Il foglietto della domanda, sul secondo strato (chi salva e' spesso dentro un modulo).
+// Per ogni campo due bottoni; Salva si accende quando sono scelti tutti. Ritorna le
+// scelte ("tuo" / "ora", nell'ordine di conf.campi) o null = non salvare.
+function chiediQualeTenere(conf, cosa) {
+  if (_m2fine) chiudiModal2(null);
+  return new Promise(res => {
+    const scelte = conf.campi.map(() => "");
+    $("#modal2Body").innerHTML = `<h2 style="margin-top:0">Cambiata nel frattempo</h2>
+      <p class="small">Mentre modificavi ${esc(cosa)}, sul foglio è cambiato ${conf.campi.length === 1 ? "lo stesso campo" : "qualcuno degli stessi campi"} (di solito l'ha fatto ${esc(other(cfg.who))}). Scegli quale tenere: il resto delle tue modifiche si salva comunque.</p>
+      ${conf.campi.map((c, i) => `<div class="field"><label>${esc(T21_CAMPI[c.campo] || c.campo)}</label>
+        <button class="btn block t21" data-i="${i}" data-v="ora" style="text-align:left;margin-bottom:6px">Sul foglio adesso: <b>${esc(t21Valore(c.ora))}</b></button>
+        <button class="btn block t21" data-i="${i}" data-v="tuo" style="text-align:left">La tua: <b>${esc(t21Valore(c.tuo))}</b></button></div>`).join("")}
+      <div class="row" style="gap:8px"><button class="btn primary grow" id="m2si" disabled>Salva</button><button class="btn" id="m2no">Non salvare</button></div>`;
+    $("#modal2").classList.remove("hidden");
+    $("#modal2").querySelector(".sheet") && ($("#modal2").querySelector(".sheet").scrollTop = 0);
+    _m2fine = v => res(v);
+    $("#modal2Body").querySelectorAll(".t21").forEach(b => b.addEventListener("click", () => {
+      const i = +b.dataset.i; scelte[i] = b.dataset.v;
+      $("#modal2Body").querySelectorAll(`.t21[data-i="${i}"]`).forEach(x => x.classList.toggle("primary", x === b));
+      $("#m2si").disabled = scelte.some(s => !s);
+    }));
+    $("#m2si").addEventListener("click", () => chiudiModal2(scelte.slice()));
+    $("#m2no").addEventListener("click", () => chiudiModal2(null));
+  });
 }
 function setNet() { const d = $("#netdot"); d.className = "dot " + (queue.length ? "pending" : (navigator.onLine ? "on" : "")); d.title = queue.length ? queue.length + " modifiche da inviare" : (navigator.onLine ? "online" : "offline"); }
 async function write(action, payload, applyLocal) {
@@ -130,7 +232,7 @@ async function write(action, payload, applyLocal) {
       toast("Offline: salvato, lo invio appena c'è rete");
       return null;
     }
-    toast("Errore: " + e.message, 4000); throw e;
+    toast(e.scelta ? e.message : "Errore: " + e.message, 4000); throw e;
   }
 }
 // T14: le azioni che a video non cambiano niente finche' il server non risponde
@@ -157,7 +259,7 @@ async function flushQueue() {
     const q = queue[0];
     if (!/^valigia\./.test(q.action)) rileggi = true;
     try { await api(q.action, q.payload); queue.shift(); LS.set("queue", queue); }
-    catch (e) { if (!/fetch|network|Failed/i.test(String(e))) { queue.shift(); LS.set("queue", queue); rileggi = true; toast("Modifica scartata: " + e.message, 4000); } else break; }
+    catch (e) { if (!/fetch|network|Failed/i.test(String(e))) { queue.shift(); LS.set("queue", queue); rileggi = true; toast(e.scelta ? e.message : "Modifica scartata: " + e.message, 4000); } else break; }
   }
   syncing = false; setNet();
   if (!queue.length && rileggi) await reload(true);
@@ -1434,8 +1536,21 @@ const SET_LISTE = {
 };
 function bozzaImpostazioni() {
   const s = D.settings || {};
-  return { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice(),
+  const b = { categorie: (s.categorie || []).slice(), chkT: templateChecklist("torneo").slice(), chkQ: templateChecklist("qualifica").slice(), valute: (s.valute || []).slice(),
     valigia: modelloValigia().map(gruppoValigiaPulito) };
+  // T21: com'erano quando la bozza e' nata. `prima` nella forma del payload (per sapere
+  // che cosa e' cambiato davvero), `vecchi` come li aveva mandati il server (la base da
+  // confrontare col foglio). La bozza resta viva anche se nel frattempo D si rilegge (T20).
+  b.prima = payloadImpostazioni(b);
+  b.vecchi = JSON.parse(JSON.stringify(Object.keys(b.prima).reduce((o, k) => { o[k] = s[k] === undefined ? "" : s[k]; return o; }, {})));
+  return b;
+}
+// Stesso payload di sempre. Le due liste hanno la loro chiave (Q4);
+// checklist_template resta sul foglio come ripiego del torneo.
+// T16: valigia_template e' la MIA valigia: il server la scrive su valigia_<chi>.
+function payloadImpostazioni(b) {
+  return { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice(),
+    valigia_template: b.valigia.map(gruppoValigiaPulito) };
 }
 // T17: un gruppo del modello come parte e come torna dal server: `se` solo se e' una
 // condizione nota (un valore sconosciuto = "Sempre"), e un gruppo senza resta come in T16
@@ -1567,12 +1682,9 @@ function scollegaApp() {
 function scollegaOra() { closeModal(); cfg.api = ""; cfg.token = ""; LS.set("cfg", cfg); render(); }
 async function saveSettings() {
   const b = setBozza || bozzaImpostazioni();
-  // Stesso payload di sempre. Le due liste hanno la loro chiave (Q4);
-  // checklist_template resta sul foglio come ripiego del torneo.
-  // T16: valigia_template e' la MIA valigia: il server la scrive su valigia_<chi>.
-  const p = { categorie: b.categorie.slice(), checklist_template_torneo: b.chkT.slice(), checklist_template_qualifica: b.chkQ.slice(), valute: b.valute.slice(),
-    valigia_template: b.valigia.map(gruppoValigiaPulito) };
-  await write("settings.save", p, d => Object.assign(d.settings, p));
+  const p = payloadImpostazioni(b);
+  // T21: solo le chiavi cambiate nella bozza; il server non tocca le altre
+  await write("settings.save", conBase(p, b.prima, b.vecchi), d => Object.assign(d.settings, p));
   setBozza = null; toast("Impostazioni salvate");
 }
 async function makeReport() {
@@ -2215,7 +2327,7 @@ function formCompenso(tripId) {
     c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim(); c.stato = $("#kStato").value;
     closeModal();
     await unaVolta("comp:" + tripId, "Salvo il compenso", async () => {
-      try { const r = await api("compenso.save", c); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); toast("Compenso salvato: " + eur(r.compenso.totale)); }
+      try { const r = await api("compenso.save", conBase(c, ex)); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); toast("Compenso salvato: " + eur(r.compenso.totale)); }
       catch (e) { toast("Errore: " + e.message, 4000); }
     });
   });
@@ -2638,7 +2750,8 @@ function formSpesa(id, tripName, forceTipo, pre, compId) {
       // stima locale (il server ricalcola col cambio del giorno)
       s.importo_eur = Math.round(s.importo * (s.cambio || 1) * 100) / 100; computeSpesa(s);
       const conFile = !!pendingFile;
-      const payload = Object.assign({}, s); if (conFile) { payload.file = pendingFile; payload.scontrino = ""; }
+      // T21: la base si calcola PRIMA del file: lo scontrino nuovo lo mette il server
+      const payload = conBase(Object.assign({}, s), ex); if (conFile) { payload.file = pendingFile; payload.scontrino = ""; }
       closeModal();
       // T14: finche' il server non ha messo lo scontrino su Drive la riga dice
       // "🧾 in arrivo…" invece di "🧾 manca": prima sembrava perso e lo si riallegava.
@@ -2756,7 +2869,7 @@ function formTrip(id, preset) {
     if (!t.nome) return toast("Dai un nome alla trasferta"); if (t.fine < t.inizio) return toast("La fine è prima dell'inizio");
     t.anno = t.inizio.slice(0, 4); const isNew = !t.id; if (isNew) t.id = uid();
     closeModal();
-    const res = await write("trasferta.save", t, d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); templateChecklist(t.tipo).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
+    const res = await write("trasferta.save", conBase(t, ex), d => { const i = d.trasferte.findIndex(x => x.id === t.id); if (i >= 0) d.trasferte[i] = t; else { d.trasferte.push(t); templateChecklist(t.tipo).forEach((v, k) => d.checklist.push({ id: uid(), trasferta_id: t.id, voce: v, stato: "da_fare", link: "", codice: "", chi: "", note: "", ordine: k + 1, _tmp: true })); } });
     if (isNew) go("trip", t.id);
     if (res) { const i = D.trasferte.findIndex(x => x.id === res.trasferta.id); if (i >= 0) D.trasferte[i] = res.trasferta; if (res.checklist && res.checklist.length) { D.checklist = D.checklist.filter(c => !(c.trasferta_id === t.id && c._tmp)).concat(res.checklist); } LS.set("data", D); render(); }
   });
@@ -2803,8 +2916,9 @@ async function spostaCheck(tripId, id, dir) {
 // il foglio ha sempre avuto: check.save non cambia.
 async function segnaCheck(id, fatto) {
   const c = (D.checklist || []).find(x => x.id === id); if (!c) return;
+  const prima = Object.assign({}, c);   // T21: la spunta cambia D sul posto, la base va presa prima
   c.stato = fatto ? "pagato" : "da_fare";
-  await write("check.save", Object.assign({}, c), () => {});
+  await write("check.save", conBase(Object.assign({}, c), prima), () => {});
 }
 // I tre stati che si scelgono nel foglietto. "prenotato" non si sceglie piu':
 // una voce vecchia che ce l'ha accende "Fatto" e, se non la si tocca, lo tiene.
@@ -2835,7 +2949,7 @@ function formCheck(id, tripId) {
     c.voce = $("#cVoce").value.trim(); c.link = $("#cLink").value.trim(); c.codice = $("#cCod").value.trim(); c.chi = $("#cChi").value; c.note = $("#cNote").value.trim();
     if (!c.voce) return toast("Scrivi cosa"); if (c.link && !/^https?:\/\//i.test(c.link)) c.link = "https://" + c.link;
     if (!c.id) c.id = uid(); closeModal();
-    await write("check.save", Object.assign({}, c), d => { const i = d.checklist.findIndex(x => x.id === c.id); if (i >= 0) d.checklist[i] = c; else d.checklist.push(c); });
+    await write("check.save", conBase(Object.assign({}, c), ex), d => { const i = d.checklist.findIndex(x => x.id === c.id); if (i >= 0) d.checklist[i] = c; else d.checklist.push(c); });
   });
   if (ex) $("#cDel").addEventListener("click", async () => { closeModal(); await write("check.del", { id: ex.id }, d => { d.checklist = d.checklist.filter(x => x.id !== ex.id); }); });
 }
@@ -2844,7 +2958,7 @@ function formCheck(id, tripId) {
 function formNota(chiave) {
   const n = (D.note || []).find(x => x.chiave === chiave) || { chiave, testo: "" };
   openModal(`<h2 style="margin-top:0">Note: ${esc(chiave)}</h2><div class="field"><textarea id="nTesto" style="min-height:160px">${esc(n.testo)}</textarea></div><div class="row" style="gap:8px"><button class="btn primary grow" id="nSave">Salva</button><button class="btn" onclick="closeModal()">Annulla</button></div>`);
-  $("#nSave").addEventListener("click", async () => { const testo = $("#nTesto").value; closeModal(); await write("nota.save", { chiave, testo }, d => { const i = d.note.findIndex(x => x.chiave === chiave); if (i >= 0) d.note[i].testo = testo; else d.note.push({ id: uid(), chiave, testo }); }); });
+  $("#nSave").addEventListener("click", async () => { const testo = $("#nTesto").value; closeModal(); await write("nota.save", conBase({ chiave, testo }, { chiave, testo: n.testo }), d => { const i = d.note.findIndex(x => x.chiave === chiave); if (i >= 0) d.note[i].testo = testo; else d.note.push({ id: uid(), chiave, testo }); }); });
 }
 
 // ---------------------------------------------------------------- DOCUMENTI
@@ -2867,7 +2981,7 @@ function formDoc(id) {
     if (docPrep) { b.disabled = true; b.textContent = "Preparo il file…"; await docPrep; b.disabled = false; b.textContent = "Salva"; }
     d.nome = $("#dNome").value.trim(); d.persona = $("#dChi").value; d.scadenza = $("#dScad").value; d.url = $("#dUrl").value.trim(); d.note = $("#dNote").value.trim();
     if (!d.nome) return toast("Dai un nome"); if (!d.id) d.id = uid(); closeModal();
-    const payload = Object.assign({}, d); if (pendingFile) payload.file = pendingFile;
+    const payload = conBase(Object.assign({}, d), ex); if (pendingFile) payload.file = pendingFile;
     const res = await write("doc.save", payload, x => { const i = x.documenti.findIndex(y => y.id === d.id); if (i >= 0) x.documenti[i] = d; else x.documenti.push(d); });
     if (res) { const i = D.documenti.findIndex(y => y.id === res.id); if (i >= 0) D.documenti[i] = res; LS.set("data", D); render(); }
   });
