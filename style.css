@@ -214,4 +214,12 @@ details.altro .field{margin-top:8px}
 /* T17: il meteo in cima alla valigia, e il selettore Quando dei gruppi in Impostazioni */
 .card.meteo{border-color:#cfdff3}
 .meteo-avviso{margin-top:8px;padding:8px 10px;border-radius:10px;background:#fff3d6;color:#8a5a00;font-weight:600;font-size:14px}
+/* T22: il giorno per giorno dentro la card, colonne fisse e numeri allineati */
+.meteo-gg-tit{margin-top:8px;font-size:14px;font-weight:600;color:var(--accent);cursor:pointer}
+.meteo-gg-lista{margin-top:4px;font-size:14px}
+.meteo-gg{display:grid;grid-template-columns:3.6em 1.5em 5.4em 4.2em 1fr 1em;column-gap:6px;align-items:center;padding:4px 0;border-top:1px solid var(--line)}
+.meteo-gg .num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.meteo-gg b{font-weight:400}
+.meteo-gg b.mf{color:#1c5cab} .meteo-gg b.mf.freddo{font-weight:700} .meteo-gg b.mc{color:#c4511a} .meteo-gg .mp{font-weight:700}
+.meteo-gg-sep{padding:6px 0 4px;font-size:12px;color:var(--muted);text-align:center;border-top:1px solid var(--line)}
 .setlist select.se{min-width:0;padding:7px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);font-size:14px;color:var(--ink)}

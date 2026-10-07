@@ -882,7 +882,7 @@ function tripAiuto(id) {
     `<b>In testa</b>: <i>Costo tuo</i> è la tua quota delle spese di questa settimana, <i>${esc(cfg.who === "Giulio" ? "Compenso" : "Vincite")}</i> quello che ti ha reso, <i>Netto</i> la differenza. I primi due restano vuoti finché la trasferta non è finita: prima il compenso non è ancora stato scritto e direbbero solo una perdita. Il conto e il bonifico lì sotto sono solo di questa trasferta.`,
     `Quanto va sui <b>libri</b> di ciascuno non sta più qui: è un numero da commercialista e si guarda una volta all'anno in <b>Soldi</b>. E quello dell'altra persona, su questa pagina, sarebbe stato anche <b>sbagliato</b>: le spese personali dell'altro non arrivano a questa app.`,
     `<b>Valigia</b>: è <b>solo tua</b>, ${esc(other(cfg.who))} ha la sua e non vede questa. Nasce con un tocco dalla tua lista (Impostazioni → <i>La mia valigia</i>) oppure vuota. Il cerchio è la spunta, un tocco una scrittura, e funziona anche <b>senza rete</b>: parte appena torna. Il resto della riga apre la voce: nome, gruppo, frecce, elimina.`,
-    `<b>Meteo</b>, in cima alla valigia: con la città in Info, la previsione (entro ${METEO_SOGLIE.giorni} giorni) o com'è di solito, e le voci dei tuoi gruppi <i>Se piove</i>, <i>Se fa freddo</i>… che mancano. Entrano solo con <i>Aggiungi</i>; ✕ su una voce la scarta per questa trasferta. Senza rete resta l'ultimo meteo, con l'ora.`,
+    `<b>Meteo</b>, in cima alla valigia: con la città in Info, la previsione (entro ${METEO_SOGLIE.giorni} giorni) o com'è di solito, e le voci dei tuoi gruppi <i>Se piove</i>, <i>Se fa freddo</i>… che mancano. Entrano solo con <i>Aggiungi</i>; ✕ su una voce la scarta per questa trasferta. <i>Giorno per giorno</i> apre la lista dei giorni: in colore i numeri che fanno scattare una regola, ⚠ i giorni freschi e ventosi. Senza rete resta l'ultimo meteo, con l'ora.`,
     `<b>Posta</b>: le mail di questa trasferta, le stesse carte e gli stessi bottoni della pagina Posta.`,
     `Le spese sono legate alla trasferta <b>per nome</b>: se la rinomini dalla scheda si aggiornano da sole.`,
   ]);
@@ -1030,7 +1030,7 @@ const METEO_SOGLIE = {
 };
 const METEO_SE = { fresco: "Se fa fresco", freddo: "Se fa freddo", caldo: "Se fa caldo", pioggia: "Se piove", vento: "Se fa fresco e tira vento", normale: "Se il tempo è normale" };
 const METEO_BREVE = { fresco: "Fa fresco", freddo: "Fa freddo", caldo: "Fa caldo", pioggia: "Piove", vento: "Fresco e ventoso", normale: "Tempo normale" };
-const METEO_DAILY_P = "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max";
+const METEO_DAILY_P = "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max,weather_code"; // weather_code: T22, l'icona del giorno
 const METEO_DAILY_A = "temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max";
 const GIORNI_SETT = ["dom", "lun", "mar", "mer", "gio", "ven", "sab"];
 const MESI_BREVI = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
@@ -1079,10 +1079,10 @@ function meteoScegliLuogo(risultati, paese) {
   const r = rs.find(va) || rs[0];
   return { lat: r.latitude, lon: r.longitude, nome: r.name || "", paese: r.country || "", giusto: va(r) };
 }
-// Una risposta della previsione → [{data, max, min, pioggia (%), vento (mph)}]
+// Una risposta della previsione → [{data, max, min, pioggia (%), vento (mph), codice (WMO)}]
 function meteoGiorniPrev(r) {
   const d = (r && r.daily) || {}, col = k => d[k] || [];
-  return col("time").map((data, i) => ({ data, max: col("temperature_2m_max")[i], min: col("temperature_2m_min")[i], pioggia: col("precipitation_probability_max")[i], vento: col("wind_speed_10m_max")[i] }))
+  return col("time").map((data, i) => ({ data, max: col("temperature_2m_max")[i], min: col("temperature_2m_min")[i], pioggia: col("precipitation_probability_max")[i], vento: col("wind_speed_10m_max")[i], codice: col("weather_code")[i] }))
     .filter(g => g.max != null && g.min != null);
 }
 // Le risposte dell'archivio (le stesse date negli anni prima) → la media giorno per
@@ -1157,6 +1157,55 @@ function righePrepara(modello, c) {
   });
   return righe;
 }
+// T22: l'icona di un giorno dal codice WMO di Open-Meteo. Solo previsione: sulle medie non
+// c'e' (la media fra "sole" e "pioggia" non vuol dire niente). Sconosciuto o assente → "".
+function meteoIcona(k) {
+  if (k == null || k === "" || isNaN(k)) return "";
+  k = Number(k);
+  if (k === 0) return "☀️"; if (k === 1) return "🌤"; if (k === 2) return "⛅"; if (k === 3) return "☁️";
+  if (k === 45 || k === 48) return "🌫";
+  if ((k >= 51 && k <= 57) || (k >= 80 && k <= 82)) return "🌦";
+  if (k >= 61 && k <= 67) return "🌧";
+  if ((k >= 71 && k <= 77) || k === 85 || k === 86) return "🌨";
+  if (k >= 95 && k <= 99) return "⛈";
+  return "";
+}
+// T22: il giorno per giorno della card, gia' pronto per l'HTML. Un giorno e' segnato per una
+// regola se, da solo, la farebbe valere — cosi' la lista non contraddice mai il riassunto.
+// L'eccezione e' la pioggia "di solito": li' la regola guarda la quota su TUTTI i giorni, e un
+// giorno piovoso in mezzo a giorni asciutti non la fa scattare. Si segnano i giorni sopra la
+// quota solo se la regola vale: "almeno un giorno segnato" resta uguale a meteoCondizioni.
+// `normale` e' di tutta la trasferta, non di un giorno: nessun segno.
+// → { righe: [{data, giorno, icona, min, max, pioggia, vento, segni}], tendenzaDal, mancaDal, anni }
+function meteoRighe(m, oggi) {
+  const S = METEO_SOGLIE, solito = !!(m && m.tipo === "solito");
+  const gs = ((m && m.giorni) || []).filter(g => solito || g.data >= oggi);
+  const c = meteoCondizioni(Object.assign({}, m, { giorni: gs }));
+  // Arrotondato, salvo quando l'intero finirebbe dalla parte sbagliata della soglia: 28,2° e' caldo
+  // ma "28" accanto a un altro "28" non lo e'; 19,6° e' fresco ma "20" no. Li' un decimale.
+  const gradi = (v, dec) => dec ? v.toFixed(1).replace(".", ",") : String(Math.round(v));
+  const righe = gs.map(g => {
+    const pioggia = solito ? (g.anni ? `${g.mmGiorni || 0}/${g.anni}` : "–") : (g.pioggia == null ? "–" : `${Math.round(g.pioggia)}%`);
+    const segni = {
+      fresco: g.min < S.fresco, freddo: g.min <= S.freddo, caldo: g.max > S.caldo,
+      pioggia: solito ? c.pioggia && g.anni > 0 && (g.mmGiorni || 0) / g.anni > S.pioggiaQuota : g.pioggia > S.pioggia,
+      vento: g.vento != null && g.vento >= S.vento && g.min < S.fresco,
+    };
+    return { data: g.data, giorno: g.data === oggi ? "oggi" : giornoBreve(g.data), icona: solito ? "" : meteoIcona(g.codice),
+      min: gradi(g.min, (segni.fresco && Math.round(g.min) >= S.fresco) || (!segni.freddo && Math.round(g.min) <= S.freddo)),
+      max: gradi(g.max, segni.caldo && Math.round(g.max) <= S.caldo), pioggia, vento: g.vento == null ? null : Math.round(g.vento), segni };
+  });
+  // dall'ottavo giorno (oggi + 7) la previsione dice la settimana, non il giorno (T17 §6)
+  // (la prima riga da li' in poi: se proprio quel giorno e' tornato vuoto, la riga dopo)
+  const td = piuGiorni(oggi, 7), primaTd = righe.find(r => r.data >= td);
+  const tendenzaDal = !solito && primaTd ? primaTd.data : null;
+  // si guarda l'ultimo giorno CON i dati, non `a`: l'ultimo giorno chiesto puo' tornare vuoto
+  // (Venice, FL il 7 ott: chiesto fino al 22, numeri fino al 21)
+  const ultimo = righe.length ? righe[righe.length - 1].data : null;
+  const mancaDal = !solito && ultimo && m.fine && ultimo < m.fine ? piuGiorni(ultimo, 1) : null;
+  const anni = solito && m.da ? `${annoPrima(m.da, 3).slice(0, 4)}–${annoPrima(m.da, 1).slice(0, 4)}` : null;
+  return { righe, tendenzaDal, mancaDal, anni };
+}
 // La cache vale ancora? Le medie per sempre; la previsione 3 ore e sulle stesse date. Una
 // cache "di solito" non vale piu' quando la partenza entra nei 16 giorni.
 function meteoFresco(c, piano, ora) {
@@ -1219,7 +1268,8 @@ function meteoCard(t) {
   if (!m) return carica || meteoInCorso[k] ? `<div class="card meteo"><span class="muted">⏳ Meteo di ${esc(t.citta)}…</span></div>` : "";
   const cond = meteoCondizioni(m), vs = valigiaTrip(t.id);
   const luogo = esc(m.luogo.nome || t.citta) + (m.luogo.giusto ? "" : ", " + esc(m.luogo.paese));
-  const parziale = m.tipo === "previsione" && m.a < m.fine ? ` · previsione fino al ${dataBreve(m.a)}` : "";
+  const ultimo = m.giorni[m.giorni.length - 1].data; // non m.a: l'ultimo giorno chiesto puo' tornare vuoto (T22)
+  const parziale = m.tipo === "previsione" && ultimo < m.fine ? ` · previsione fino al ${dataBreve(ultimo)}` : "";
   let sug = "";
   if (vs.length) {
     const ss = meteoSuggerimenti(cond, modelloValigia(), vs, LS.get(meteoChiaveNo(t.id), [])), n = ss.reduce((a, s) => a + s.voci.length, 0);
@@ -1235,8 +1285,28 @@ function meteoCard(t) {
     <div class="muted">${dataBreve(giornoIso(t.inizio))} → ${dataBreve(giornoIso(t.fine))}${parziale}</div>
     ${meteoAvvisi(cond).map(a => `<div class="meteo-avviso">⚠ ${esc(a)}</div>`).join("")}
     <div style="margin-top:6px">${esc(meteoRiassunto(m, cond))}</div>
+    ${meteoGiorniHtml(m)}
     ${sug}
     <div class="small muted" style="margin-top:8px">aggiornato ${oraBreve(m.ts)}</div></div>`;
+}
+// T22: il giorno per giorno dentro la card, chiuso di default. Aperto/chiuso vale per
+// tutte le trasferte ed e' ricordato su QUESTO telefono: comodita', non dato.
+const MGG = "meteoGiorni";
+function meteoGiorniApri() { LS.set(MGG, !LS.get(MGG, false)); renderFermo(); }
+function meteoGiorniHtml(m) {
+  const aperto = !!LS.get(MGG, false), R = meteoRighe(m, today());
+  if (!R.righe.length) return "";
+  const tit = `<div class="meteo-gg-tit tap" onclick="meteoGiorniApri()">Giorno per giorno${R.anni ? ` · com'era nel ${R.anni}` : ""} ${aperto ? "▴" : "▾"}</div>`;
+  if (!aperto) return tit;
+  const cl = (on, c) => on ? ` class="${c}"` : "";
+  const righe = R.righe.map(r => (r.data === R.tendenzaDal ? `<div class="meteo-gg-sep">— da ${r.giorno}: tendenza, non il giorno preciso —</div>` : "") +
+    `<div class="meteo-gg">
+      <span>${esc(r.giorno)}</span><span>${r.icona}</span>
+      <span class="num"><b${cl(r.segni.freddo, "mf freddo") || cl(r.segni.fresco, "mf")}>${r.min}</b>–<b${cl(r.segni.caldo, "mc")}>${r.max}</b>°</span>
+      <span class="num${r.segni.pioggia ? " mp" : ""}">💧 ${esc(r.pioggia)}</span>
+      <span class="num">${r.vento == null ? "" : r.vento + " mph"}</span><span>${r.segni.vento ? "⚠" : ""}</span></div>`).join("");
+  const manca = R.mancaDal ? `<div class="meteo-gg-sep">dal ${dataBreve(R.mancaDal)} la previsione non c'è ancora</div>` : "";
+  return tit + `<div class="meteo-gg-lista">${righe}${manca}</div>`;
 }
 // Aggiungi: le voci suggerite entrano nel gruppo `se` (es. "Se piove"), in fondo alla
 // lista, una valigia.save per voce, in coda come ogni scrittura della valigia (T16).
