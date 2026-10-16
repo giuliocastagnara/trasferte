@@ -4,7 +4,10 @@
 // ---------------------------------------------------------------- stato
 const LS = {
   get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  // T24: dice se ce l'ha fatta. Prima ingoiava tutto, e con la memoria del telefono
+  // piena (sull'iPhone ~5 MB, una foto in coda ne pesa 150-400 KB) una spesa offline
+  // "salvata" in realta' non era scritta da nessuna parte: chiusa la app, era persa.
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },
 };
 const cfg = LS.get("cfg", { api: "", token: "", who: "" });
 let D = LS.get("data", null);                 // dati (boot)
@@ -228,8 +231,8 @@ async function write(action, payload, applyLocal) {
     return res;
   } catch (e) {
     if (!navigator.onLine || /fetch|network|Failed/i.test(String(e))) {
-      queue.push({ action, payload, ts: Date.now() }); LS.set("queue", queue); setNet();
-      toast("Offline: salvato, lo invio appena c'è rete");
+      const esito = mettiInCoda({ action, payload, ts: Date.now() });
+      if (esito === "ok") toast("Offline: salvato, lo invio appena c'è rete");
       return null;
     }
     toast(e.scelta ? e.message : "Errore: " + e.message, 4000); throw e;
@@ -247,6 +250,33 @@ async function unaVolta(chiavi, cosa, fn) {
   if (gia) { toast(inCorso[gia] + "… un attimo"); return; }
   chiavi.forEach(k => { inCorso[k] = cosa; }); render();
   try { return await fn(); } finally { chiavi.forEach(k => { delete inCorso[k]; }); render(); }
+}
+// T24: mette una modifica in coda e controlla che la coda sia DAVVERO scritta sul
+// telefono. Se non ci sta e la modifica porta un file (scontrino, documento), riprova
+// senza: meglio la spesa senza scontrino — si riallega dopo da "🧾 manca" — che niente.
+// Se non ci sta neanche cosi', lo dice: resta solo in memoria e si perde chiudendo la app.
+// In memoria si tiene la stessa versione che si e' provato a scrivere (senza il file),
+// cosi' coda in memoria e coda sul telefono non raccontano due storie diverse.
+// Restituisce "ok", "senzaFile" o "persa"; i due casi brutti hanno gia' il loro avviso.
+function mettiInCoda(voce) {
+  queue.push(voce);
+  if (LS.set("queue", queue)) { setNet(); return "ok"; }
+  const conFile = voce.payload && voce.payload.file;
+  if (conFile) {
+    const p = Object.assign({}, voce.payload); delete p.file;
+    voce.payload = p;
+    if (p.id) scontriniInArrivo.delete(p.id);   // la riga torna a dire "🧾 manca", non "in arrivo"
+    if (LS.set("queue", queue)) {
+      setNet(); render();
+      toast(voce.action === "doc.save"
+        ? "Memoria del telefono piena: il documento è in coda SENZA il file. Quando torna la rete riaprilo e riallega il file"
+        : "Memoria del telefono piena: la spesa è in coda SENZA lo scontrino. Quando torna la rete riallegalo da \"🧾 manca\"", 9000);
+      return "senzaFile";
+    }
+  }
+  setNet(); render();
+  toast("Memoria del telefono piena: la modifica NON è salvata sul telefono. Parte solo se la app resta aperta finché torna la rete: se la chiudi, è persa", 10000);
+  return "persa";
 }
 async function flushQueue() {
   if (!queue.length || syncing || !navigator.onLine) return;
@@ -489,8 +519,19 @@ function render() {
   const mainEl = document.querySelector("main"), y = mainEl ? mainEl.scrollTop : 0;
   const html = (map[view] || vOggi)();
   const pagina = [view, viewArg, view === "trip" ? tripSeg : view === "posta" ? postaSeg : view === "soldi" ? soldiSeg : ""].join("|");
+  // T24: se si sta scrivendo in una casella della pagina (la ricerca delle spese) e un
+  // render arriva lo stesso — la rilettura al ritorno, la risposta di un salvataggio —
+  // la casella nuova riprende il fuoco e il cursore dov'erano. preventScroll: lo
+  // scroll lo decide la regola di T14 qui sotto, non il focus().
+  const att = document.activeElement;
+  const fuoco = att && att.id && /^(INPUT|TEXTAREA)$/.test(att.tagName) && $("#view").contains(att)
+    ? { id: att.id, da: att.selectionStart, a: att.selectionEnd } : null;
   $("#view").innerHTML = html;
   const stessa = pagina === paginaResa; paginaResa = pagina;
+  if (fuoco && stessa) {
+    const el = document.getElementById(fuoco.id);
+    if (el) { el.focus({ preventScroll: true }); try { if (fuoco.da != null) el.setSelectionRange(fuoco.da, fuoco.a); } catch (e) {} }
+  }
   if (mainEl) mainEl.scrollTop = stessa ? y : 0;
   if (!stessa) window.scrollTo(0, 0);
 }
@@ -906,7 +947,7 @@ let valigiaUltimoGruppo = "";
 // coda in aereo — arriverebbe al server prima della lista, e verrebbe rifiutata.
 function scriviValigia(action, payload, applyLocal) {
   applyLocal(D); LS.set("data", D);
-  queue.push({ action, payload, ts: Date.now() }); LS.set("queue", queue); setNet();
+  mettiInCoda({ action, payload, ts: Date.now() });
   render();
   flushQueue();
 }
@@ -1410,7 +1451,7 @@ function sceltaFoglietto(titolo, opz, cur, cb) {
 // i compensi caddie e i pagamenti fra loro due: quelli si vedono nel segmento Conto.
 const mieSpese = () => visibleSpese().filter(s => s.tipo !== "caddie" && s.tipo !== "regolamento" && Math.abs(mioImporto(s)) > 0.004);
 let fSp = { q: "", trip: "", tipo: "", cat: "", anno: "", noScont: false, cerca: false };
-function soldiSpese() {
+function soldiSpese(parti) {
   const all = mieSpese();
   const years = [...new Set(all.map(s => String(s.data).slice(0, 4)))].filter(y => /^\d{4}$/.test(y)).sort().reverse();
   if (!fSp.anno || !years.includes(fSp.anno)) fSp.anno = years[0] || "";
@@ -1436,16 +1477,15 @@ function soldiSpese() {
   // Quante righe ha ogni scelta lo dice il foglietto, cosi' non si sceglie al buio.
   const conta = f => { const c = {}; inAnno.forEach(s => { const k = f(s); if (k) c[k] = (c[k] || 0) + 1; }); return c; };
   const chip = (on, lab, fn) => `<button type="button" class="${on ? "on" : ""}" onclick="${fn}">${lab}</button>`;
-  let h = `<div class="chips scroll">
+  const chips = `
       ${chip(true, esc(fSp.anno) + " ▾", "filtroSpese('anno')")}
       ${chip(!!fSp.trip, (fSp.trip ? esc(fSp.trip) : "Trasferta") + " ▾", "filtroSpese('trip')")}
       ${chip(!!fSp.cat, (fSp.cat ? esc(catBreve(fSp.cat)) : "Categoria") + " ▾", "filtroSpese('cat')")}
       ${tipi.length > 1 ? chip(!!fSp.tipo, (fSp.tipo ? esc(TIPI[fSp.tipo]) : "Tipo") + " ▾", "filtroSpese('tipo')") : ""}
       ${chip(fSp.noScont, "🧾 Senza scontrino", "fSp.noScont=!fSp.noScont;render()")}
-      ${chip(fSp.cerca || !!q, "🔍", "fSp.cerca=!fSp.cerca;if(!fSp.cerca)fSp.q='';render()")}
-      ${attivi ? chip(false, "✕ Azzera", "fSp.q='';fSp.trip='';fSp.tipo='';fSp.cat='';fSp.noScont=false;fSp.cerca=false;render()") : ""}
-    </div>
-    ${fSp.cerca || q ? `<div class="field" style="margin:8px 0 4px"><input class="fq" placeholder="Cerca descrizione, categoria, trasferta…" value="${esc(fSp.q)}" oninput="fSp.q=this.value;render()" autofocus></div>` : ""}
+      ${chip(fSp.cerca || !!q, "🔍", "apriCercaSpese()")}
+      ${attivi ? chip(false, "✕ Azzera", "fSp.q='';fSp.trip='';fSp.tipo='';fSp.cat='';fSp.noScont=false;fSp.cerca=false;render()") : ""}`;
+  let h = `
     <div class="row between" style="margin:8px 0 2px"><span class="muted">${list.length} spes${list.length === 1 ? "a" : "e"}${senzaS ? ` · ${senzaS} senza scontrino` : ""}</span><span class="amt">${eur(tot)}</span></div>`;
   // le liste che i foglietti mostrano: si preparano qui, coi conteggi dell'anno scelto
   const nTrip = conta(s => s.trasferta), nCat = conta(s => s.categoria), nTipo = conta(s => s.tipo);
@@ -1459,7 +1499,35 @@ function soldiSpese() {
   list.forEach(s => { const m = String(s.data).slice(0, 7); if (m !== lastM) { if (open) h += `</div>`; h += `<div class="month row between"><span>${monthName(m + "-01")}</span><span>${eur(byM[m])}</span></div><div class="card list">`; open = true; lastM = m; } h += itemSpesa(s, true); });
   if (open) h += `</div>`;
   if (!list.length) h += `<div class="empty">Nessuna spesa${attivi ? `<br><span class="small">Prova ad azzerare i filtri</span>` : ""}</div>`;
-  return h;
+  if (parti) return { chips, lista: h };
+  // T24: la casella di ricerca sta FUORI da #spChips e #spList, e mentre si scrive
+  // si ridisegnano solo quei due (cercaSpese). Prima ogni lettera passava da render(),
+  // che rifaceva tutta la pagina: la casella veniva distrutta e rifatta, il fuoco
+  // finiva sul body e sull'iPhone la tastiera si chiudeva dopo la prima lettera.
+  return `<div class="chips scroll" id="spChips">${chips}</div>
+    ${fSp.cerca || q ? `<div class="field" style="margin:8px 0 4px"><input id="spQ" class="fq" type="search" enterkeyhint="search" autocomplete="off" placeholder="Cerca descrizione, categoria, trasferta…" value="${esc(fSp.q)}" oninput="cercaSpese(this.value)"></div>` : ""}
+    <div id="spList">${h}</div>`;
+}
+// T24: una lettera aggiorna fSp.q subito (cosi' un render() di passaggio, per esempio
+// la rilettura al ritorno di T20, usa gia' il testo giusto) e la lista dopo una breve
+// pausa, per non rifare 400 righe a ogni tasto. La casella non si tocca mai.
+let cercaTimer = 0;
+function cercaSpese(v) {
+  fSp.q = v;
+  clearTimeout(cercaTimer);
+  cercaTimer = setTimeout(() => {
+    const c = $("#spChips"), l = $("#spList");
+    if (!c || !l || view !== "soldi" || soldiSeg !== "spese") return;
+    const p = soldiSpese(true); c.innerHTML = p.chips; l.innerHTML = p.lista;
+  }, 150);
+}
+// T24: il fuoco si da' a mano, dentro il tocco sulla 🔍: `autofocus` su un elemento
+// messo con innerHTML vale solo la prima volta che la pagina lo vede, e sull'iPhone
+// la tastiera si apre solo se focus() parte da un gesto della persona.
+function apriCercaSpese() {
+  fSp.cerca = !fSp.cerca; if (!fSp.cerca) fSp.q = "";
+  render();
+  const i = $("#spQ"); if (fSp.cerca && i) i.focus({ preventScroll: true });
 }
 let _filtri = {};
 function filtroSpese(k) { const f = _filtri[k]; if (!f) return; sceltaFoglietto(f.tit, f.opz, f.cur, v => { f.set(v); render(); }); }
