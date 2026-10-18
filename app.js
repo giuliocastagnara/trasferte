@@ -1429,7 +1429,7 @@ function soldiAiuto() {
   const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
   aiutoFoglietto("Come funziona Soldi", [
     `<b>Netto</b> è entrate meno quello che la settimana ti è costata, ed è il numero sulla carta di una trasferta passata. ${cfg.who === "Giulio" ? "Le righe <i>compenso caddie</i> non ti costano niente, quindi non lo spostano." : "Il <b>compenso caddie</b> ci sta dentro: pagarlo è un costo vero della settimana. Per questo è più alto del totale della lista <i>Spese</i>, che quelle righe non le mostra — sono generate dal compenso e la fattura sta sul pagamento."}`,
-    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista.`,
+    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista. Le settimane con un compenso stanno in due righe (da saldare · differenze delle fatture già fatte) e si saldano da <i>Compensi</i>; <i>Altre trasferte</i> sono quelle senza compenso, e lì <i>Salda</i> chiude il conto di quella sola.`,
     `<b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.`,
     `<b>Compensi</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.`,
     `<b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.`,
@@ -1537,20 +1537,47 @@ function filtroSpese(k) { const f = _filtri[k]; if (!f) return; sceltaFoglietto(
 // modulo del pagamento con importo e chi paga gia' scritti (quello che faceva
 // kPay dal compenso) e passa il compenso di quella trasferta, se c'e': cosi'
 // dopo il salvataggio la app CHIEDE ancora se segnarlo saldato (T9).
+// T27 giro 1: "Per trasferta" sommava i pagamenti sulla trasferta scritta nel modulo, e
+// una fattura che paga cinque settimane finiva tutta su UNA (Jabra diceva "devi 3 254,75 €"
+// e Investec, gia' saldata, "ti deve 1 587,38 €": "Salda" avrebbe fatto nascere un secondo
+// pagamento). Le trasferte con un compenso si contano come in Compensi e stanno in due righe
+// sole; "Altre trasferte" restano quelle SENZA compenso (qualifiche, Q-school), dove il saldo
+// per trasferta e' esatto e "Salda" e' sicuro. Le tre parti sommano a saldoTot() per
+// costruzione, verificato sui dati del 18 ott: 15 003,02 + 360,23 − 744,58 = 14 618,67.
+//  - settimane da saldare = Σ daPagare delle settimane senza fattura: lo stesso "da
+//    bonificare" di Compensi (una settimana segnata saldata SENZA fattura e' aperta: nessuno
+//    l'ha pagata, e l'audit la segnala);
+//  - settimane gia' saldate = quanto valgono OGGI meno quanto hanno pagato le fatture
+//    archiviate sulle trasferte con compenso: lo scarto di T13 §4 piu' le spese cambiate dopo
+//    il pagamento. E' il numero che "e' gia' nel Conto" e che nessuna fattura futura include;
+//  - trasferte senza compenso, riga per riga.
+// I Movimenti (fino a 200 righe) stanno piegati: si aprono con un tocco (T27 Q2).
+let _contoMov = false;
 function soldiConto() {
+  const r2 = v => Math.round(v * 100) / 100;
+  const comp = D.compensi || [], conComp = new Set(comp.map(c => c.trasferta));
+  const aperte = comp.filter(c => c.stato !== "pagato" || !c.pagamento_id), saldate = comp.filter(c => c.stato === "pagato" && c.pagamento_id);
+  const sett = r2(aperte.reduce((a, c) => a + daPagare(c), 0));
+  const fatt = visibleSpese().filter(s => s.tipo === "regolamento" && conComp.has(s.trasferta));
+  const resto = r2(saldate.reduce((a, c) => a + daPagare(c), 0) - fatt.reduce((a, f) => a + segnoPag(f), 0));
   const mov = visibleSpese().filter(x => Math.abs(+x.saldo || 0) > 0.004).sort((a, b) => a.data < b.data ? 1 : -1);
-  const byTrip = {}; mov.forEach(x => byTrip[x.trasferta] = Math.round(((byTrip[x.trasferta] || 0) + (+x.saldo)) * 100) / 100);
+  const byTrip = {}; mov.filter(x => !conComp.has(x.trasferta)).forEach(x => byTrip[x.trasferta] = r2((byTrip[x.trasferta] || 0) + (+x.saldo)));
   const trips = Object.keys(byTrip).filter(k => Math.abs(byTrip[k]) > 0.004).sort((a, b) => Math.abs(byTrip[b]) - Math.abs(byTrip[a]));
   _contoTrip = trips;
+  const nSett = aperte.length === 1 ? "1 settimana" : aperte.length + " settimane";
   let h = `<button class="btn primary block" style="margin:0 0 12px" onclick="formSpesa(null,null,'regolamento')">＋ Registra pagamento</button>
-    <h2 style="margin-top:0">Per trasferta</h2><div class="card list">${trips.length ? trips.map((k, i) => `<div class="item"><div class="grow"><div class="ellipsis"><b>${esc(k)}</b></div><div class="muted">${esc(frase(saldoIo(byTrip[k])))}</div></div><button class="btn sm" onclick="saldaTrip(${i})">Salda</button></div>`).join("") : `<div class="muted">Siete pari su ogni trasferta</div>`}</div>
-    <h2>Movimenti</h2><div class="card list">${mov.slice(0, 200).map(x => `<div class="item tap" onclick="formSpesa('${x.id}')"><div class="grow"><div class="ellipsis"><b>${esc(x.descrizione)}</b> <span class="pill ${x.tipo === "caddie" ? "warn" : x.tipo === "regolamento" ? "blue" : ""}">${TIPI[x.tipo]}</span></div><div class="muted">${fmtDY(x.data)} · ${esc(x.trasferta)} · ha pagato ${esc(x.pagato_da)}${x.tipo === "condivisa" ? " · tot " + eur(x.importo_eur) + " ÷" + x.n_persone : ""}</div></div><div class="amt" style="color:${x.saldo > 0 ? "var(--good)" : "var(--bad)"}">${x.saldo > 0 ? "+" : ""}${eur(x.saldo)}</div></div>`).join("") || `<div class="muted">Nessun movimento</div>`}</div>
-    <div class="muted" style="margin-top:6px">+ = a credito di Giulio · − = a credito di Alessandra</div>`;
+    <h2 style="margin-top:0">Settimane di gara</h2><div class="card list">
+      <div class="item tap" onclick="setSoldiSeg('compensi')"><div class="grow"><div><b>Da saldare</b>${aperte.length ? ` <span class="muted">· ${nSett}</span>` : ""}</div><div class="muted">${aperte.length ? esc(frase(saldoIo(sett))) : "Nessuna settimana da saldare"}</div></div><span class="pill ${aperte.length ? "warn" : ""}">${aperte.length ? "Compensi ›" : "tutte saldate"}</span></div>
+      ${Math.abs(resto) >= 0.005 ? `<div class="item tap" onclick="setSoldiSeg('compensi')"><div class="grow"><div><b>Già saldate</b> <span class="muted">· differenze sulle fatture</span></div><div class="muted">${esc(frase(saldoIo(resto)))}</div></div><span class="pill">Fatture ›</span></div>` : ""}
+    </div>
+    <h2>Altre trasferte</h2><div class="card list">${trips.length ? trips.map((k, i) => `<div class="item"><div class="grow"><div class="ellipsis"><b>${esc(k)}</b></div><div class="muted">${esc(frase(saldoIo(byTrip[k])))}</div></div><button class="btn sm" onclick="saldaTrip(${i})">Salda</button></div>`).join("") : `<div class="muted">Siete pari su ogni trasferta senza compenso</div>`}</div>
+    <div class="row between"><h2>Movimenti <span class="muted">(${mov.length})</span></h2><button class="btn sm" onclick="_contoMov=!_contoMov;render()">${_contoMov ? "Nascondi ▴" : "Mostra ▾"}</button></div>`;
+  if (_contoMov) h += `<div class="card list">${mov.slice(0, 200).map(x => `<div class="item tap" onclick="formSpesa('${x.id}')"><div class="grow"><div class="ellipsis"><b>${esc(x.descrizione)}</b> <span class="pill ${x.tipo === "caddie" ? "warn" : x.tipo === "regolamento" ? "blue" : ""}">${TIPI[x.tipo]}</span></div><div class="muted">${fmtDY(x.data)} · ${esc(x.trasferta)} · ha pagato ${esc(x.pagato_da)}${x.tipo === "condivisa" ? " · tot " + eur(x.importo_eur) + " ÷" + x.n_persone : ""}</div></div><div class="amt" style="color:${x.saldo > 0 ? "var(--good)" : "var(--bad)"}">${x.saldo > 0 ? "+" : ""}${eur(x.saldo)}</div></div>`).join("") || `<div class="muted">Nessun movimento</div>`}</div>`;
   return h;
 }
 // Il pagamento che chiude il conto di UNA trasferta: importo = quel saldo, paga chi
-// deve. Il saldo qui comprende anche compenso e pagamenti gia' fatti (e' il conto
-// vero), quindi e' lo stesso numero di "da bonificare" quando c'e' un compenso.
+// deve. Dal T27 ci arrivano solo le trasferte SENZA compenso (le altre si saldano dalla
+// settimana, in Compensi): il passaggio del compenso resta per sicurezza, non scatta.
 // Il nome passa per indice (_contoTrip), non dentro l'onclick: un apostrofo lo romperebbe.
 let _contoTrip = [];
 function saldaTrip(i) {
@@ -2441,11 +2468,11 @@ function formCompenso(tripId) {
     <div class="cols"><div class="field"><label>Fisso settimana €</label><input id="kFisso" inputmode="decimal" value="${esc(c.fisso)}"></div><div class="field"><label>Montepremi Alessandra €</label><input id="kPrize" inputmode="decimal" value="${esc(c.montepremi)}" placeholder="0"></div></div>
     <div class="muted" style="margin:-4px 0 10px">Il montepremi va scritto <b>in euro</b> e <b>al lordo</b>: se il torneo lo pubblica in un'altra valuta, convertilo prima di inserirlo qui — il codice non converte nulla. La percentuale si calcola sempre sul lordo pubblicato.</div>
     <div class="field"><label>Risultato</label><div class="seg" id="segRis">${Object.keys(RIS).map(k => `<button data-v="${k}" class="${c.risultato === k ? "on" : ""}">${RIS[k]}</button>`).join("")}</div></div>
-    <div class="cols"><div class="field"><label>Extra € (opz.)</label><input id="kExtra" inputmode="decimal" value="${esc(c.extra)}"></div><div class="field"><label>Stato</label><select id="kStato"><option value="da_pagare" ${c.stato !== "pagato" ? "selected" : ""}>Da saldare</option><option value="pagato" ${c.stato === "pagato" ? "selected" : ""}>Saldato</option></select></div></div>
+    <div class="field"><label>Extra € (opz.)</label><input id="kExtra" inputmode="decimal" value="${esc(c.extra)}"></div>
     <div class="muted" style="margin-bottom:10px">${t.intercontinentale === "si" ? "Trasferta intercontinentale. Il 50% della tratta lunga <b>non</b> si somma qui: quei voli vanno registrati come spesa <i>condivisa</i> e il 50% arriva dal saldo della trasferta (stessa cassa per Giulio, più deduzione per Alessandra). I voli <i>interni</i> alla destinazione se li paga Giulio, come dentro l'Europa." : "Trasferta non intercontinentale: nessun rimborso voli."}</div>
     <div class="field"><label>Note</label><input id="kNote" value="${esc(c.note || "")}"></div>
     <div id="kPrev" class="preview"></div>
-    ${ex && ex.pagamento_id ? rigaFattura(ex) : ""}
+    ${ex ? (ex.pagamento_id ? rigaFattura(ex) : `<div class="muted" style="margin-bottom:10px">${ex.stato === "pagato" ? "Segnata saldata, ma <b>senza fattura</b>: collegala dal bottone <i>Settimane</i> di una fattura in Soldi › Compensi, oppure registra qui sotto il pagamento." : "Si salda <b>registrando il pagamento</b>, qui sotto: è la fattura che chiude la settimana, non c'è uno stato da cambiare a mano."}</div>`) : ""}
     <div class="row" style="gap:8px"><button class="btn primary grow" id="kSave">Salva</button>${ex ? `<button class="btn danger" id="kDel">Elimina</button>` : ""}<button class="btn" onclick="closeModal()">Annulla</button></div>
     ${ex ? `<div class="row" style="gap:8px;margin-top:8px"><button class="btn grow" id="kPay">＋ Registra pagamento</button></div>` : ""}`);
   // saldo delle spese della trasferta: non dipende dai campi qui sopra, si legge una volta
@@ -2462,7 +2489,7 @@ function formCompenso(tripId) {
   // un solo bonifico chiude sia il compenso sia il saldo di quella trasferta
   if (ex) $("#kPay").addEventListener("click", () => { const imp = Math.abs(dpOra); closeModal(); formSpesa(null, t.nome, "regolamento", { importo: imp ? imp : "", valuta: "EUR", cambio: 1, pagato_da: dpOra < 0 ? "Giulio" : "Alessandra", descrizione: "Saldo " + t.nome }, ex.id); });
   $("#kSave").addEventListener("click", async () => {
-    c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim(); c.stato = $("#kStato").value;
+    c.fisso = String($("#kFisso").value).replace(",", "."); c.montepremi = String($("#kPrize").value).replace(",", ".") || 0; c.extra = String($("#kExtra").value).replace(",", ".") || 0; c.note = $("#kNote").value.trim();   // T27: lo stato lo mettono solo le fatture (compenso.stato), qui non si tocca piu'
     closeModal();
     await unaVolta("comp:" + tripId, "Salvo il compenso", async () => {
       try { const r = await api("compenso.save", conBase(c, ex)); const i = D.compensi.findIndex(x => x.id === r.compenso.id); if (i >= 0) D.compensi[i] = r.compenso; else D.compensi.push(r.compenso); const j = D.spese.findIndex(x => x.id === r.spesa.id); if (j >= 0) D.spese[j] = r.spesa; else D.spese.push(r.spesa); LS.set("data", D); toast("Compenso salvato: " + eur(r.compenso.totale)); }
