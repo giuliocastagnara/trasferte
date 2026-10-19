@@ -652,7 +652,10 @@ function vOggi() {
   const noScMese = noSc.filter(x => String(x.data).slice(0, 7) === meseOra).length;
   if (noSc.length) h += `<div class="card tap" onclick="apriSenzaScontrino('${annoOra}')"><div class="row between"><div class="grow"><b>🧾 Scontrini mancanti</b><div class="muted">${noSc.length} spes${noSc.length === 1 ? "a" : "e"} senza foto nel ${annoOra}${noScMese ? ` · ${noScMese} di questo mese` : ""}</div></div><span class="pill ${noScMese ? "bad" : "warn"}">${noSc.length}</span><span>›</span></div></div>`;
   // Il conto nella voce di chi legge (saldoIo), non "+4 918 €" con la legenda.
-  h += `<div class="card tap" onclick="go('soldi','conto')"><div class="row between"><div class="grow"><div class="muted">Conto</div><div style="font-weight:700;font-size:17px">${esc(frase(saldoIo(s)))}</div></div><span>›</span></div></div>`;
+  // T28: sotto, le parti (settimane da saldare · differenze · altre trasferte) con il segno
+  // a favore di chi legge: il numero di Conto non e' piu' "un altro numero".
+  const parti = spiegaConto(partiConto(), true);
+  h += `<div class="card tap" onclick="go('soldi','conto')"><div class="row between"><div class="grow"><div class="muted">Conto</div><div style="font-weight:700;font-size:17px">${esc(frase(saldoIo(s)))}</div>${parti ? `<div class="muted small">${esc(parti)}</div>` : ""}</div><span>›</span></div></div>`;
   if (nxt) {
     const cs = checkSummary(nxt.id), days = giorniA(nxt.inizio);
     h += `<h2>Prossima</h2><div class="card tap" onclick="go('trip','${nxt.id}')"><div class="row between"><div class="grow"><b>${esc(nxt.nome)}</b><div class="muted">${fmtD(nxt.inizio)} → ${fmtD(nxt.fine)} · tra ${days} giorn${days === 1 ? "o" : "i"}${nxt.valuta && nxt.valuta !== "EUR" ? " · " + esc(nxt.valuta) : ""}</div></div>
@@ -721,6 +724,28 @@ const TAG_TIPO = { torneo: "", qualifica: " blue", casa: " grey", altro: " warn"
 const INTERCONT_NOTA = `<b>Trasferta intercontinentale.</b> La <b>tratta lunga</b> va registrata come spesa <i>condivisa</i>: il 50% torna a Giulio dal <b>conto</b>, non dal compenso — stessa cassa per lui, più deduzione per Alessandra. I voli <b>interni</b> alla destinazione se li paga Giulio, come dentro l’Europa.`;
 const intercont = t => String((t || {}).intercontinentale || "").toLowerCase() === "si";
 function aiutoIntercont() { aiutoFoglietto("Voli su una trasferta intercontinentale", [INTERCONT_NOTA]); }
+// T28: i SOLDI dei voli su una trasferta intercontinentale, non solo la regola. I voli
+// condivisi con il totale, la quota di Giulio (libri_giulio, scritta da computeSpesa: non si
+// ricalcola niente) e quella di Alessandra (il resto); piu' i personali di Giulio che vedo
+// (a lei non arrivano). Categoria con "Voli", fuori caddie e regolamento.
+function voliIntercont(t) {
+  const r2 = v => Math.round(v * 100) / 100;
+  const voli = tripSpese(t.nome).filter(s => /voli/i.test(String(s.categoria || "")) && s.tipo !== "caddie" && s.tipo !== "regolamento");
+  const cond = voli.filter(s => s.tipo === "condivisa"), pers = voli.filter(s => s.tipo === "personale" && s.conto === "Giulio");
+  const pieno = r2(cond.reduce((a, s) => a + (+s.importo_eur || 0), 0)), quotaG = r2(cond.reduce((a, s) => a + (+s.libri_giulio || 0), 0));
+  return { cond, pieno, quotaG, quotaA: r2(pieno - quotaG), pers, persTot: r2(pers.reduce((a, s) => a + (+s.importo_eur || 0), 0)) };
+}
+// La riga ✈ in testata alla trasferta, solo se intercontinentale: tocca → le spese. In
+// arancione quando non c'e' ancora nessun volo condiviso, il caso che prima non si vedeva
+// per niente. I personali di Giulio compaiono solo a lui: il dubbio "l'ho messo giusto?" e' suo.
+function rigaVoliIntercont(t) {
+  if (!intercont(t)) return "";
+  const v = voliIntercont(t), n = v.cond.length;
+  const chi = cfg.who === "Giulio" ? `Alessandra ne copre ${eur(v.quotaA)}, tu ${eur(v.quotaG)}` : `ne copri ${eur(v.quotaA)}, Giulio ${eur(v.quotaG)}`;
+  let txt = n ? `✈ Voli condivisi ${eur(v.pieno)} (${n}) · ${chi}` : `✈ Nessun volo condiviso ancora: la tratta lunga va registrata condivisa`;
+  if (v.pers.length) txt += ` · ${v.pers.length === 1 ? "1 volo personale" : v.pers.length + " voli personali"} ${eur(v.persTot)} (va bene se intern${v.pers.length === 1 ? "o" : "i"})`;
+  return `<div class="tap ${n ? "muted" : ""}" style="margin-top:6px${n ? "" : ";color:var(--warn);font-weight:600"}" onclick="setTripSeg('spese')">${esc(txt)}</div>`;
+}
 const tagTipo = tp => { const k = String(tp || "torneo").toLowerCase(); return `<span class="pill${k in TAG_TIPO ? TAG_TIPO[k] : " grey"}">${esc(k)}</span>`; };
 // Trasferte che esistono solo nelle spese: toccandole si crea la scheda,
 // cosi' diventano modificabili come tutte le altre. Il nome NON va cambiato:
@@ -848,7 +873,7 @@ function vTrip() {
       <div class="row between"><span>${fmtDY(t.inizio)} → ${fmtDY(t.fine)}${t.citta ? " · " + esc(t.citta) : ""} · ${esc(t.valuta || "EUR")}</span>${tagTipo(t.tipo)}${intercont(t) ? ` <span class="pill blue tap" onclick="aiutoIntercont()">intercont. ?</span>` : ""}</div>
       ${q ? `<div class="muted">${esc(frase(q))}</div>` : ""}
       <div class="kp"><div><b class="${nettoTrip === null ? "" : nettoTrip < 0 ? "out" : "in"}">${nettoTrip === null ? "—" : (nettoTrip < 0 ? "−" : "+") + eur(Math.abs(nettoTrip))}</b><span>Netto</span></div><div><b class="${nettoTrip === null ? "" : "in"}">${nettoTrip === null ? "—" : eur(entTrip)}</b><span>${esc(labEnt)}</span></div><div><b>${eur(costoMio)}</b><span>Costo tuo</span></div></div>
-      <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>${rigaCompensoTrip(t)}
+      <div style="font-weight:600;margin-top:10px">${esc(saldoTripIo(t.nome))}</div>${rigaCompensoTrip(t)}${rigaVoliIntercont(t)}
     </div>
     <div class="seg tripseg" style="margin:0 0 12px">${Object.keys(TRIP_SEG).map(k => `<button class="${tripSeg === k ? "on" : ""}" onclick="setTripSeg('${k}')">${TRIP_SEG[k]}${n[k] ? " " + n[k] : ""}</button>`).join("")}</div>`;
   return h + ({ checklist: tripChecklistSeg, valigia: tripValigiaSeg, spese: tripSpeseSeg, posta: tripPostaSeg, info: tripInfoSeg }[tripSeg] || tripChecklistSeg)(t, carte);
@@ -1415,7 +1440,7 @@ function vSoldi() {
   const inc = Math.round(entrateAnno(y).reduce((a, c) => a + c.val, 0) * 100) / 100;
   const labIn = cfg.who === "Giulio" ? "Compensi" : "Vincite";
   let h = `<div class="row"><h1 class="grow" style="margin:0">Soldi</h1><button class="ask" onclick="soldiAiuto()" title="Come funziona">?</button><button class="btn sm" onclick="scegliAnnoSoldi()">${esc(y)} ▾</button></div>
-    <div class="card head" style="margin-top:12px"><div class="muted">Conto</div><div style="font-weight:700;font-size:19px">${esc(frase(saldoIo(s)))}</div>
+    <div class="card head" style="margin-top:12px"><div class="muted">Conto</div><div style="font-weight:700;font-size:19px">${esc(frase(saldoIo(s)))}</div>${spiegaConto(partiConto())}
       <div class="kp"><div><b>${eur(out)}</b><span>Spese tue ${esc(y)}</span></div><div><b class="in">${eur(inc)}</b><span>${esc(labIn)} ${esc(y)}</span></div><div><b class="${inc - out < 0 ? "out" : "in"}">${eur(inc - out)}</b><span>Netto ${esc(y)}</span></div></div></div>
     <div class="seg" style="margin:0 0 12px">${Object.keys(SOLDI_SEG).map(k => `<button class="${soldiSeg === k ? "on" : ""}" onclick="setSoldiSeg('${k}')">${SOLDI_SEG[k]}</button>`).join("")}</div>`;
   return h + ({ conto: soldiConto, spese: soldiSpese, anno: soldiAnnoSeg }[soldiSeg] || soldiConto)();
@@ -1429,7 +1454,7 @@ function soldiAiuto() {
   const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
   aiutoFoglietto("Come funziona Soldi", [
     `<b>Netto</b> è entrate meno quello che la settimana ti è costata, ed è il numero sulla carta di una trasferta passata. ${cfg.who === "Giulio" ? "Le righe <i>compenso caddie</i> non ti costano niente, quindi non lo spostano." : "Il <b>compenso caddie</b> ci sta dentro: pagarlo è un costo vero della settimana. Per questo è più alto del totale della lista <i>Spese</i>, che quelle righe non le mostra — sono generate dal compenso e la fattura sta sul pagamento."}`,
-    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista. Le <i>settimane di gara</i> sono le trasferte con un compenso: ognuna dice quanto va bonificato (compenso più il conto di quella trasferta) o il numero congelato dalla fattura che l'ha saldata; si saldano toccando la settimana e registrando il pagamento, oppure dal ＋ in cima, che propone già spuntate le settimane che l'importo copre. <i>Già saldate · differenze sulle fatture</i> è quanto le settimane saldate valgono oggi meno quanto hanno pagato le fatture: è già nel conto, nessuna fattura futura lo include. <i>Altre trasferte</i> sono quelle senza compenso, e lì <i>Salda</i> chiude il conto di quella sola.`,
+    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista. Le <i>settimane di gara</i> sono le trasferte con un compenso: ognuna dice quanto va bonificato (compenso più il conto di quella trasferta) o il numero congelato dalla fattura che l'ha saldata; si saldano toccando la settimana e registrando il pagamento, oppure dal ＋ in cima, che propone già spuntate le settimane che l'importo copre. <i>Già saldate · differenze sulle fatture</i> è quanto le settimane saldate valgono oggi meno quanto hanno pagato le fatture: è già nel conto, nessuna fattura futura lo include. <i>Altre trasferte</i> sono quelle senza compenso, e lì <i>Salda</i> chiude il conto di quella sola. In testa, sotto il totale, queste parti sommano al Conto: <b>+</b> a tuo favore, <b>−</b> a tuo carico.`,
     `<b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.`,
     `<b>Compenso caddie</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.`,
     `<b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.`,
@@ -1558,17 +1583,47 @@ function filtroSpese(k) { const f = _filtri[k]; if (!f) return; sceltaFoglietto(
 // dove c'e' il ＋ di quella settimana sola), le altre trasferte con Salda, la riga delle
 // differenze, le Fatture (fattureCompensi, invariata) e i Movimenti piegati (T27 Q2).
 // Le strade per segnare un pagamento sono due: il ＋ in cima e il Salda sulla riga.
-let _contoMov = false;
-function soldiConto() {
+// T28: le parti del conto, UNA volta sola, per la testata di Soldi, per Oggi e per il
+// segmento Conto. Stesse formule del T27 giro 1, nessun numero nuovo: settimane da saldare
+// = Σ daPagare delle settimane senza fattura; differenze = Σ daPagare di oggi delle saldate
+// − Σ fatture archiviate su trasferte con compenso; altre = saldo per trasferta delle
+// trasferte SENZA compenso. `resto` e' quello che le tre non coprono (oggi 0): sta qui
+// perche' la somma torni col totale per costruzione, e se un giorno non fosse zero si veda
+// invece di sparire. Prima Oggi diceva 14 618,67 € e la prima cifra di Conto 15 003,02 €
+// senza che niente a video spiegasse la differenza (−744,58 altre trasferte, +360,23 fatture).
+function partiConto() {
   const r2 = v => Math.round(v * 100) / 100;
   const comp = D.compensi || [], conComp = new Set(comp.map(c => c.trasferta));
   const aperte = comp.filter(c => c.stato !== "pagato" || !c.pagamento_id), saldate = comp.filter(c => c.stato === "pagato" && c.pagamento_id);
   const sett = r2(aperte.reduce((a, c) => a + daPagare(c), 0));
   const fatt = visibleSpese().filter(s => s.tipo === "regolamento" && conComp.has(s.trasferta));
-  const resto = r2(saldate.reduce((a, c) => a + daPagare(c), 0) - fatt.reduce((a, f) => a + segnoPag(f), 0));
+  const diff = r2(saldate.reduce((a, c) => a + daPagare(c), 0) - fatt.reduce((a, f) => a + segnoPag(f), 0));
   const mov = visibleSpese().filter(x => Math.abs(+x.saldo || 0) > 0.004).sort((a, b) => a.data < b.data ? 1 : -1);
   const byTrip = {}; mov.filter(x => !conComp.has(x.trasferta)).forEach(x => byTrip[x.trasferta] = r2((byTrip[x.trasferta] || 0) + (+x.saldo)));
   const trips = Object.keys(byTrip).filter(k => Math.abs(byTrip[k]) > 0.004).sort((a, b) => Math.abs(byTrip[b]) - Math.abs(byTrip[a]));
+  const altre = r2(trips.reduce((a, k) => a + byTrip[k], 0)), tot = saldoTot();
+  return { tot, sett, aperte, saldate, diff, altre, trips, byTrip, mov, comp, conComp, resto: r2(tot - sett - diff - altre) };
+}
+// La scomposizione del conto nella voce di chi legge. I segni sono a FAVORE di chi guarda:
+// + = ti devono, − = devi (per Alessandra i numeri del foglio escono rovesciati, e la riga
+// del totale dice la stessa cosa della frase "devi a Giulio…" sopra). Con una parte sola
+// non c'e' niente da spiegare e torna "". compatto = una riga in grigio per Oggi.
+function spiegaConto(p, compatto) {
+  const io = cfg.who === "Giulio" ? 1 : -1;
+  const segno = v => (v * io < -0.004 ? "−" : "+") + eur(Math.abs(v));
+  const righe = [];
+  if (p.aperte.length) righe.push([`Settimane da saldare (${p.aperte.length})`, p.sett, "settimane da saldare"]);
+  if (Math.abs(p.diff) >= 0.005) righe.push([`Differenze sulle fatture (${p.saldate.length} saldate)`, p.diff, "differenze sulle fatture"]);
+  if (p.trips.length) righe.push([`Altre trasferte (${p.trips.length})`, p.altre, "altre trasferte"]);
+  if (Math.abs(p.resto) >= 0.005) righe.push(["Non attribuito", p.resto, "non attribuito"]);
+  if (righe.length < 2) return "";
+  if (compatto) return righe.map(r => `${segno(r[1])} ${r[2]}`).join(" · ");
+  return `<div class="parti">${righe.map(r => `<div class="row between"><span>${esc(r[0])}</span><span class="amt">${segno(r[1])}</span></div>`).join("")}<div class="row between tot"><span>Conto</span><span class="amt">${segno(p.tot)}</span></div><div class="small">+ a tuo favore · − a tuo carico</div></div>`;
+}
+let _contoMov = false;
+function soldiConto() {
+  const p = partiConto();
+  const { comp, conComp, aperte, saldate, sett, mov, byTrip, trips } = p, resto = p.diff;
   _contoTrip = trips;
   // le settimane di gara: ogni trasferta di torneo/qualifica conclusa, dalla piu' recente
   const gare = (D.trasferte || []).filter(t => t.tipo !== "casa" && t.tipo !== "altro" && t.fine <= today()).sort((a, b) => a.inizio < b.inizio ? 1 : -1);
@@ -2465,7 +2520,7 @@ function formCompenso(tripId) {
     <div class="muted" style="margin:-4px 0 10px">Il montepremi va scritto <b>in euro</b> e <b>al lordo</b>: se il torneo lo pubblica in un'altra valuta, convertilo prima di inserirlo qui — il codice non converte nulla. La percentuale si calcola sempre sul lordo pubblicato.</div>
     <div class="field"><label>Risultato</label><div class="seg" id="segRis">${Object.keys(RIS).map(k => `<button data-v="${k}" class="${c.risultato === k ? "on" : ""}">${RIS[k]}</button>`).join("")}</div></div>
     <div class="field"><label>Extra € (opz.)</label><input id="kExtra" inputmode="decimal" value="${esc(c.extra)}"></div>
-    <div class="muted" style="margin-bottom:10px">${t.intercontinentale === "si" ? "Trasferta intercontinentale. Il 50% della tratta lunga <b>non</b> si somma qui: quei voli vanno registrati come spesa <i>condivisa</i> e il 50% arriva dal saldo della trasferta (stessa cassa per Giulio, più deduzione per Alessandra). I voli <i>interni</i> alla destinazione se li paga Giulio, come dentro l'Europa." : "Trasferta non intercontinentale: nessun rimborso voli."}</div>
+    <div class="muted" style="margin-bottom:10px">${t.intercontinentale === "si" ? "Trasferta intercontinentale. Il 50% della tratta lunga <b>non</b> si somma qui: quei voli vanno registrati come spesa <i>condivisa</i> e il 50% arriva dal saldo della trasferta (stessa cassa per Giulio, più deduzione per Alessandra). I voli <i>interni</i> alla destinazione se li paga Giulio, come dentro l'Europa." + (() => { const v = voliIntercont(t); return v.cond.length ? ` Su questa: voli condivisi <b>${eur(v.pieno)}</b> (${v.cond.length}), a carico di Alessandra ${eur(v.quotaA)} e di Giulio ${eur(v.quotaG)} — quello che vi dovete per questi voli è già dentro il saldo spese qui sotto.` : " Su questa <b>non c'è ancora nessun volo condiviso</b>."; })() : "Trasferta non intercontinentale: nessun rimborso voli."}</div>
     <div class="field"><label>Note</label><input id="kNote" value="${esc(c.note || "")}"></div>
     <div id="kPrev" class="preview"></div>
     ${ex ? (ex.pagamento_id ? rigaFattura(ex) : `<div class="muted" style="margin-bottom:10px">${ex.stato === "pagato" ? "Segnata saldata, ma <b>senza fattura</b>: collegala dal bottone <i>Settimane</i> di una fattura in Soldi › Conto, oppure registra qui sotto il pagamento." : "Si salda <b>registrando il pagamento</b>, qui sotto: è la fattura che chiude la settimana, non c'è uno stato da cambiare a mano."}</div>`) : ""}

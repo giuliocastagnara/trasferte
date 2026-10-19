@@ -198,6 +198,12 @@ details.altro .field{margin-top:8px}
 /* Soldi: la testata, una sola — il conto e i tre numeri dell'anno */
 .card.head{background:var(--brand-soft);border-color:#cfe5da}
 .card.head .muted{color:var(--brand)}
+/* T28: le parti del conto sotto il totale, in testa a Soldi */
+.parti{margin-top:8px;font-size:13px;font-variant-numeric:tabular-nums}
+.parti .row{padding:2px 0}
+.parti .tot{border-top:1px solid #cfe5da;margin-top:4px;padding-top:5px;font-weight:700}
+.parti .amt{font-size:13px}
+.parti .small{color:var(--brand);font-size:11px;margin-top:4px}
 .kp{display:flex;gap:8px;margin-top:10px}
 .kp>div{flex:1 1 0;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:7px 6px}
 /* 13px: a 375px di larghezza tre "24.564,11 €" devono starci per intero, senza puntini */
