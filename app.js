@@ -1457,7 +1457,7 @@ function soldiAiuto() {
   const st = D.settings || {}, fisso = Number(st.compenso_fisso || 900);
   aiutoFoglietto("Come funziona Soldi", [
     `<b>Netto</b> è entrate meno quello che la settimana ti è costata, ed è il numero sulla carta di una trasferta passata. ${cfg.who === "Giulio" ? "Le righe <i>compenso caddie</i> non ti costano niente, quindi non lo spostano." : "Il <b>compenso caddie</b> ci sta dentro: pagarlo è un costo vero della settimana. Per questo è più alto del totale della lista <i>Spese</i>, che quelle righe non le mostra — sono generate dal compenso e la fattura sta sul pagamento."}`,
-    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista. Le <i>settimane di gara</i> sono le trasferte con un compenso: ognuna dice quanto va bonificato (compenso più il conto di quella trasferta) o il numero congelato dalla fattura che l'ha saldata; si saldano toccando la settimana e registrando il pagamento, oppure dal ＋ in cima, che propone già spuntate le settimane che l'importo copre. <i>Già saldate · differenze sulle fatture</i> è quanto le settimane saldate valgono oggi meno quanto hanno pagato le fatture: è già nel conto, nessuna fattura futura lo include. <i>Altre trasferte</i> sono quelle senza compenso, e lì <i>Salda</i> chiude il conto di quella sola. Se un bonifico ha chiuso anche altre trasferte o spese pagate fuori dalla app, si dice alla fattura con <i>Cosa paga</i>: le trasferte spuntate passano dentro la fattura (nessuna riga nuova, i debiti sono già nel conto), le spese fuori app diventano una riga sola, dentro la sua fattura. In testa, sotto il totale, queste parti sommano al Conto: <b>+</b> a tuo favore, <b>−</b> a tuo carico.`,
+    `<b>Conto</b> è quello che vi dovete: una spesa <i>condivisa</i> pagata da uno crea il debito della quota dell'altro, un compenso caddie va a credito di Giulio, un <i>pagamento</i> azzera. Qui è detto dal tuo punto di vista. Le <i>settimane di gara</i> sono le trasferte con un compenso: ognuna dice quanto va bonificato (compenso più il conto di quella trasferta) o il numero congelato dalla fattura che l'ha saldata; si saldano toccando la settimana e registrando il pagamento, oppure dal ＋ in cima, che propone già spuntate le settimane che l'importo copre. <i>Già saldate · differenze sulle fatture</i> è quanto le settimane saldate valgono oggi meno quanto hanno pagato le fatture: è già nel conto, nessuna fattura futura lo include. <i>Altre trasferte</i> sono quelle senza compenso, e lì <i>Salda</i> chiude il conto di quella sola. Se un bonifico ha chiuso anche altre trasferte o spese pagate fuori dalla app, si dice alla fattura con <i>Cosa paga</i>: le trasferte spuntate passano dentro la fattura (nessuna riga nuova, i debiti sono già nel conto), le spese fuori app diventano una riga sola, dentro la sua fattura, e <i>Differenze delle fatture precedenti</i> dice che il bonifico ha chiuso anche quello che le fatture di prima avevano lasciato aperto. In testa, sotto il totale, queste parti sommano al Conto: <b>+</b> a tuo favore, <b>−</b> a tuo carico.`,
     `<b>Spese</b> sono solo le tue, come il numero in testa: ${cfg.who === "Giulio" ? "la tua quota delle condivise e le tue personali" : "le condivise per intero e le tue personali"}. Compensi e pagamenti non sono spese: stanno in Conto.`,
     `<b>Compenso caddie</b>: ${eur(fisso)} a settimana di torneo · ${esc(st.perc_taglio || 8)}% del montepremi lordo con taglio superato · ${esc(st.perc_vittoria || 10)}% con vittoria. Il compenso resta lordo, è quello che Alessandra scarica. <b>Da bonificare</b> è il compenso più il conto di quella trasferta: un bonifico solo chiude tutti e due. Il 50% delle tratte intercontinentali arriva dal conto, non dal compenso: quei voli si registrano come spesa condivisa.`,
     `<b>Anno</b>: <i>Spese Team</i> è quanto vi è costata la stagione nelle settimane di torneo e qualifica, ogni spesa contata una volta per l'importo pieno, chiunque abbia pagato. La calcola il server, perché a questa app mancano le personali dell'altra persona.`,
@@ -2507,13 +2507,17 @@ function fattureCompensi(comp) {
   return `<h2>Fatture</h2>` + fatt.map(f => {
     const sett = comp.filter(c => c.pagamento_id === f.id).sort((a, b) => String(ini[a.trasferta_id]) < String(ini[b.trasferta_id]) ? -1 : 1);
     const altre = altreDi(f), fuori = fuoriAppDi(f.id);
-    const P = segnoPag(f), S = copertoDa(f), qualcosa = sett.length || Object.keys(altre).length || fuori.length;
+    const P = segnoPag(f), S = copertoDa(f), qualcosa = sett.length || Object.keys(altre).length || fuori.length || haPrec(f);
+    // le differenze di questa fattura le ha pagate una fattura successiva
+    const dopo = fatt.find(g => g.id !== f.id && haPrec(g) && String(g.data) > String(f.data)), l = Math.round((S - P) * 100) / 100;
+    const frase = dopo && Math.abs(l) >= 0.005 ? `Differenza ${eur(Math.abs(l))} a favore di ${l > 0 ? "Giulio" : "Alessandra"}: saldata con la fattura del ${fmtDY(dopo.data)}.` : fraseDiff(l);
     return `<div class="card"><div class="row between tap" onclick="formSpesa('${f.id}')"><div class="grow"><div class="ellipsis"><b>${esc(f.descrizione)}</b></div><div class="muted">${fmtDY(f.data)} · ha pagato ${esc(f.pagato_da)}</div></div><div class="amt">${eur(Math.abs(P))}</div></div>
       <div style="margin:8px 0">${qualcosa
         ? sett.map(c => riga(esc(c.trasferta), valoreSett(c, f.id))).join("")
           + Object.keys(altre).map(k => riga(`${esc(k)} <span class="pill grey">altra trasferta</span>`, Number(altre[k]) || 0)).join("")
           + fuori.map(x => `<div class="tap" onclick="formSpesa('${x.id}')">${riga(`${esc(x.descrizione || "Fuori dalla app")} <span class="pill blue">fuori app</span>`, Number(x.saldo) || 0)}</div>`).join("")
-          + `<div class="muted" style="margin-top:4px">${fraseDiff(Math.round((S - P) * 100) / 100)}</div>`
+          + (haPrec(f) ? riga(`Differenze delle fatture precedenti`, precDi(f)) : "")
+          + `<div class="muted" style="margin-top:4px">${frase}</div>`
         : `<div class="muted">Nessuna settimana collegata</div>`}</div>
       <button class="btn sm" onclick="settimaneFattura('${f.id}')">Cosa paga</button></div>`;
   }).join("");
@@ -2593,16 +2597,18 @@ async function chiediSaldato(pag, compId, daCarta) {
     : compId === "*" ? coperteDa(cand, segnoPag(pag))
     : compId ? cand.filter(c => c.id === compId).map(c => c.id) : [];
   const fuoriPrima = fuoriAppDi(pag.id)[0] || null;
-  const ris = await sceltaSettimane(pag, cand, scelte, gia.length > 0 || altre.some(a => a.gia) || !!fuoriPrima, altre, fuoriPrima);
+  const prec = haPrec(pag) ? { v: precDi(pag), gia: true } : { v: diffPrecedenti(pag), gia: false };
+  const ris = await sceltaSettimane(pag, cand, scelte, gia.length > 0 || altre.some(a => a.gia) || !!fuoriPrima || prec.gia, altre, fuoriPrima, prec);
   if (!ris) return;
   const aggiungi = ris.sett.filter(id => gia.indexOf(id) < 0), togli = gia.filter(id => ris.sett.indexOf(id) < 0);
   // le altre trasferte: quelle gia' sue tengono il valore congelato, le nuove prendono quello di adesso
   const primaA = altreDi(pag), nuovaA = {};
   ris.altre.forEach(k => { nuovaA[k] = k in primaA ? primaA[k] : saldoAltra(k); });
   const altreCambiate = Object.keys(primaA).sort().join("\n") !== Object.keys(nuovaA).sort().join("\n");
+  const nuovaP = ris.prec ? prec.v : null, precCambiate = ris.prec !== prec.gia;
   const fu = ris.fuori, fuoriCambiate = !fu ? !!fuoriPrima
     : !fuoriPrima || !ugualeCampo(fuoriPrima.importo, fu.importo) || fuoriPrima.pagato_da !== fu.chi || String(fuoriPrima.descrizione || "") !== fu.descr;
-  if (!aggiungi.length && !togli.length && !altreCambiate && !fuoriCambiate) return;
+  if (!aggiungi.length && !togli.length && !altreCambiate && !fuoriCambiate && !precCambiate) return;
   // T14: le settimane toccate dicono "in corso" finche' il server non risponde
   const chiavi = cand.filter(c => aggiungi.indexOf(c.id) >= 0 || togli.indexOf(c.id) >= 0).map(c => "comp:" + c.trasferta_id).concat("pag:" + pag.id);
   // la riga come l'ha scritta il server (null = offline, resta quella locale)
@@ -2615,9 +2621,9 @@ async function chiediSaldato(pag, compId, daCarta) {
       r.forEach(x => { const i = D.compensi.findIndex(y => y.id === x.id); if (i >= 0) D.compensi[i] = x; });
       LS.set("data", D);
       const ora = new Date().toISOString().slice(0, 19);
-      if (altreCambiate) {
+      if (altreCambiate || precCambiate) {
         const prima = (D.spese || []).find(x => x.id === pag.id) || pag;
-        const dopo = Object.assign({}, prima, { note: scriviNotaPag(Object.assign({}, notaPag(prima), { altre: nuovaA })), modificato: ora });
+        const dopo = Object.assign({}, prima, { note: scriviNotaPag(Object.assign({}, notaPag(prima), { altre: nuovaA, prec: nuovaP })), modificato: ora });
         tieni(await write("spesa.save", conBase(Object.assign({}, dopo), prima), d => { const i = d.spese.findIndex(x => x.id === dopo.id); if (i >= 0) d.spese[i] = dopo; }));
       }
       if (fuoriCambiate && !fu) await write("spesa.del", { id: fuoriPrima.id }, d => { d.spese = d.spese.filter(x => x.id !== fuoriPrima.id); });
@@ -2628,7 +2634,7 @@ async function chiediSaldato(pag, compId, daCarta) {
         }, { importo: fu.importo, importo_eur: fu.importo, pagato_da: fu.chi, descrizione: fu.descr, modificato: ora }));
         tieni(await write("spesa.save", conBase(Object.assign({}, riga), fuoriPrima), d => { const i = d.spese.findIndex(x => x.id === riga.id); if (i >= 0) d.spese[i] = riga; else d.spese.push(riga); }));
       }
-      toast(aggiungi.length && !altreCambiate && !fuoriCambiate ? `${aggiungi.length === 1 ? "Settimana saldata" : aggiungi.length + " settimane saldate"} con questa fattura` : "Fattura aggiornata");
+      toast(aggiungi.length && !altreCambiate && !fuoriCambiate && !precCambiate ? `${aggiungi.length === 1 ? "Settimana saldata" : aggiungi.length + " settimane saldate"} con questa fattura` : "Fattura aggiornata");
     } catch (e) { toast("Errore: " + e.message, 4000); }
   });
 }
@@ -2674,7 +2680,8 @@ function scriviNotaPag(j) {
   if (j.testo) o.testo = String(j.testo);
   if (j.altre && Object.keys(j.altre).length) o.altre = j.altre;
   if (j.fattura) o.fattura = j.fattura;
-  return !o.altre && !o.fattura ? (o.testo || "") : JSON.stringify(o);
+  if (j.prec != null && j.prec !== "") o.prec = j.prec;
+  return !o.altre && !o.fattura && o.prec == null ? (o.testo || "") : JSON.stringify(o);
 }
 const altreDi = f => Object.assign({}, notaPag(f).altre || {});
 // Una riga "fuori app" e' sua solo se la fattura esiste ancora: se la fattura sparisce
@@ -2712,7 +2719,24 @@ function copertoDa(f) {
   const sett = (D.compensi || []).filter(c => c.pagamento_id === f.id).reduce((a, c) => a + valoreSett(c, f.id), 0);
   const altre = Object.values(altreDi(f)).reduce((a, v) => a + (Number(v) || 0), 0);
   const fuori = fuoriAppDi(f.id).reduce((a, s) => a + (Number(s.saldo) || 0), 0);
-  return Math.round((sett + altre + fuori) * 100) / 100;
+  return Math.round((sett + altre + fuori + precDi(f)) * 100) / 100;
+}
+// T29: una fattura puo' pagare anche le DIFFERENZE delle fatture di prima (quelle che
+// la riga "Già saldate" diceva "non lo copre nessuna fattura"): il saldo di fine
+// anno ci ha messo i 370 € che Alessandra doveva dalle fatture di marzo-giugno.
+// Come le altre trasferte: nessuna riga nuova (sono gia' nel Conto), solo il valore
+// congelato nella nota, perche' la carta dica a che cosa e' servito il bonifico.
+const precDi = f => { const v = notaPag(f).prec; return v == null || v === "" ? 0 : Number(v) || 0; };
+const haPrec = f => { const v = notaPag(f).prec; return v != null && v !== ""; };
+// Le differenze che stanno nel Conto per colpa delle ALTRE fatture: la riga "Già
+// saldate" meno quello che ci mette questa (le sue settimane di oggi, le sue altre
+// trasferte, lei stessa e le sue righe fuori app).
+function diffPrecedenti(f) {
+  const leg = trasferteLegate(), sue = Object.keys(leg).filter(k => leg[k].f.id === f.id);
+  const mia = (D.compensi || []).filter(c => c.pagamento_id === f.id).reduce((a, c) => a + daPagare(c), 0)
+    + sue.reduce((a, k) => a + saldoAltra(k), 0) + (Number(f.saldo) || 0)
+    + fuoriAppDi(f.id).reduce((a, s) => a + (Number(s.saldo) || 0), 0);
+  return Math.round((partiConto().diff - mia) * 100) / 100;
 }
 // Quanto vale una settimana per questa fattura: il numero congelato se e' gia' sua,
 // altrimenti il da_pagare di adesso (e' quello che il server congelera').
@@ -2735,7 +2759,7 @@ function fraseDiff(l) {
 // Il foglietto "Cosa paga": settimane, altre trasferte (T29) e spese fuori app (T29).
 // Risponde { sett: [id compensi], altre: [nomi], fuori: { importo, chi, descr } | null }.
 // fuori.chi e' il pagato_da della riga: "Giulio" = Alessandra gli doveva (saldo +).
-function sceltaSettimane(pag, cand, scelte, modifica, altre, fuoriPrima) {
+function sceltaSettimane(pag, cand, scelte, modifica, altre, fuoriPrima, prec) {
   const P = segnoPag(pag);
   altre = altre || [];
   const sez = t => `<div style="margin:12px 0 4px"><b>${t}</b></div>`;
@@ -2749,6 +2773,7 @@ function sceltaSettimane(pag, cand, scelte, modifica, altre, fuoriPrima) {
         return voce(`data-id="${esc(c.id)}"`, c.trasferta, `${fmtD(c._t.inizio)} → ${fmtD(c._t.fine)}${nota}`, v, scelte.indexOf(c.id) >= 0); }).join("")}</div>` : ""}
       ${altre.length ? sez("Altre trasferte") + `<div class="muted" style="margin-bottom:4px">Senza compenso: il loro conto passa dentro questa fattura, senza righe nuove.</div><div id="m2altre" class="card list" style="padding:0 14px">${altre.map((a, i) =>
         voce(`data-i="${i}"`, a.nome, `${a._t.inizio ? fmtD(a._t.inizio) + " → " + fmtD(a._t.fine) : ""}${a.gia ? " · già su questa fattura" : ""}`, a.v, a.gia)).join("")}</div>` : ""}
+      ${prec && (prec.gia || Math.abs(prec.v) >= 0.005) ? sez("Fatture precedenti") + `<div id="m2prec" class="card list" style="padding:0 14px">${voce("", "Differenze delle fatture precedenti", prec.gia ? "già su questa fattura" : "quello che le fatture di prima non hanno chiuso", prec.v, prec.gia)}</div>` : ""}
       ${sez("Spese fuori dalla app")}
       <div class="muted" style="margin-bottom:6px">Cose che vi siete pagati senza registrarle qui e che questo bonifico ha messo a posto. Diventano una riga sola, dentro la fattura: non entrano nei libri di nessuno.</div>
       <div class="cols"><div class="field"><label>Importo €</label><input id="m2fImp" inputmode="decimal" value="${fuoriPrima ? esc(num(fp.importo)) : ""}" placeholder="0,00"></div>
@@ -2761,13 +2786,14 @@ function sceltaSettimane(pag, cand, scelte, modifica, altre, fuoriPrima) {
     _m2fine = res;
     const r2 = v => Math.round(v * 100) / 100;
     const sett = () => Array.from(document.querySelectorAll("#m2sett input:checked"));
-    const alt = () => Array.from(document.querySelectorAll("#m2altre input:checked"));
+    const alt = () => Array.from(document.querySelectorAll("#m2altre input:checked, #m2prec input:checked"));
+    const precOn = () => !!document.querySelector("#m2prec input:checked");
     const chi = () => { const b = document.querySelector("#m2fChi button.on"); return b ? b.dataset.v : "Giulio"; };
     const fImp = () => Math.abs(parseFloat(String($("#m2fImp").value).replace(/\s/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")) || 0);
     const fVal = () => (chi() === "Giulio" ? 1 : -1) * fImp();
     const senzaFuori = () => r2(sett().concat(alt()).reduce((a, x) => a + Number(x.dataset.v), 0));
     const conta = () => { const S = r2(senzaFuori() + fVal()), n = sett().length + alt().length;
-      const pezzi = []; if (sett().length) pezzi.push(sett().length === 1 ? "1 settimana" : sett().length + " settimane"); if (alt().length) pezzi.push(alt().length === 1 ? "1 altra trasferta" : alt().length + " altre trasferte"); if (fImp()) pezzi.push("le spese fuori app");
+      const pezzi = []; if (sett().length) pezzi.push(sett().length === 1 ? "1 settimana" : sett().length + " settimane"); const nA = alt().length - (precOn() ? 1 : 0); if (nA) pezzi.push(nA === 1 ? "1 altra trasferta" : nA + " altre trasferte"); if (precOn()) pezzi.push("le differenze di prima"); if (fImp()) pezzi.push("le spese fuori app");
       $("#m2tot").innerHTML = n || fImp() ? `${esc(pezzi.join(", "))} per ${eur(Math.abs(S))}. ${fraseDiff(r2(S - P))}` : "Nessuna voce spuntata."; };
     $("#modal2Body").addEventListener("change", conta);
     $("#m2fImp").addEventListener("input", conta);
@@ -2779,7 +2805,7 @@ function sceltaSettimane(pag, cand, scelte, modifica, altre, fuoriPrima) {
       $("#m2fImp").value = num(Math.abs(a)); $("#m2fChi").querySelectorAll("button").forEach(x => x.classList.toggle("on", x.dataset.v === (a > 0 ? "Giulio" : "Alessandra"))); conta(); });
     conta();
     $("#m2si").addEventListener("click", () => { const imp = r2(fImp());
-      chiudiModal2({ sett: sett().map(x => x.dataset.id), altre: alt().map(x => altre[Number(x.dataset.i)].nome),
+      chiudiModal2({ sett: sett().map(x => x.dataset.id), altre: alt().filter(x => x.dataset.i != null).map(x => altre[Number(x.dataset.i)].nome), prec: precOn(),
         fuori: imp >= 0.01 ? { importo: imp, chi: chi(), descr: String($("#m2fDesc").value || "").trim() || "Spese fuori app" } : null }); });
     $("#m2no").addEventListener("click", () => chiudiModal2(null));
   });
